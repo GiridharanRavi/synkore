@@ -3,7 +3,6 @@ const router  = express.Router();
 const db      = require('../db/connection');
 const { auth } = require('../middleware/auth');
 
-// ── helpers ──────────────────────────────────────────────────────────────────
 const parseItems = (raw) => {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -18,7 +17,6 @@ const parseRow = (row) => {
   return { ...row, items: parseItems(row.items) };
 };
 
-// ── Get actual table columns (cached after first call) ──────────────────────
 let _cachedCols = null;
 const getTableColumns = async () => {
   if (_cachedCols) return _cachedCols;
@@ -28,7 +26,6 @@ const getTableColumns = async () => {
   return _cachedCols;
 };
 
-// ── Build insert/update payload using ONLY columns that exist in DB ──────────
 const buildPayload = (body, tableColumns) => {
   const {
     order_code, sample_request_id, order_date, po_no, po_date,
@@ -41,7 +38,11 @@ const buildPayload = (body, tableColumns) => {
     packing_type_id, packing_type,
     confirm_mode, confirm_by, confirm_code,
     expect_delivery, pinning, rate_type, payment_terms,
-    freight, transport, certification_type, certificate_no, remarks,
+    freight, transport, transport_id,
+    certification_type, certificate_no, certification_id,
+    remarks,
+    aef, aef_id, ae, ae_id,
+    firm,
     order_type, quality_type, hsn_code, sort_no, quality,
     delivery_instruction,
     cgst_pct, sgst_pct, igst_pct,
@@ -49,7 +50,6 @@ const buildPayload = (body, tableColumns) => {
     items,
   } = body;
 
-  // All possible fields mapped to their values
   const allFields = {
     order_code:            order_code            || null,
     sample_request_id:     sample_request_id     || null,
@@ -86,8 +86,15 @@ const buildPayload = (body, tableColumns) => {
     payment_terms:         payment_terms         || null,
     freight:               freight               || null,
     transport:             transport             || null,
+    transport_id:          transport_id          || null,
     certification_type:    certification_type    || null,
     certificate_no:        certificate_no        || null,
+    certification_id:      certification_id      || null,
+    aef:                   aef                   || null,
+    aef_id:                aef_id                || null,
+    ae:                    ae                    || null,
+    ae_id:                 ae_id                 || null,
+    firm:                  firm                  || null,
     remarks:               remarks               || null,
     order_type:            order_type            || 'Domestic',
     quality_type:          quality_type          || 'Regular',
@@ -103,12 +110,11 @@ const buildPayload = (body, tableColumns) => {
     sgst_value:            Number(sgst_value)    || 0,
     igst_value:            Number(igst_value)    || 0,
     net_value:             Number(net_value)     || 0,
-    items:                 (items && Array.isArray(items) && items.length > 0)
-                             ? JSON.stringify(items)
-                             : null,
+    items: (items && Array.isArray(items) && items.length > 0)
+             ? JSON.stringify(items)
+             : null,
   };
 
-  // Filter to only columns that actually exist in the DB table
   const filtered = {};
   for (const [key, val] of Object.entries(allFields)) {
     if (tableColumns.includes(key)) {
@@ -123,12 +129,6 @@ const buildPayload = (body, tableColumns) => {
 // ======================================================
 // GET ALL
 // ======================================================
-// FIX: Customer Orders is shared internal business data — both admin AND
-// employee accounts should see every booking. Only a genuine customer/
-// client-portal account (anyone NOT admin/employee) gets scoped to its own
-// customer_id. Previously only 'admin' was treated as a staff role, so
-// employees fell into the customer-scoped branch, had no customer_id on
-// their JWT or in the query string, and got a 400 "customer_id is required".
 router.get('/', auth, async (req, res) => {
   try {
     let rows;
@@ -180,10 +180,10 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ message: 'order_code is required' });
     }
 
-    const cols   = Object.keys(payload);
-    const vals   = Object.values(payload);
-    const marks  = cols.map(() => '?').join(',');
-    const sql    = `INSERT INTO order_bookings (${cols.join(',')}) VALUES (${marks})`;
+    const cols  = Object.keys(payload);
+    const vals  = Object.values(payload);
+    const marks = cols.map(() => '?').join(',');
+    const sql   = `INSERT INTO order_bookings (${cols.join(',')}) VALUES (${marks})`;
 
     console.log('[POST] SQL:', sql);
     console.log('[POST] values count:', vals.length);
@@ -207,9 +207,9 @@ router.put('/:id', auth, async (req, res) => {
     const tableColumns = await getTableColumns();
     const payload      = buildPayload(req.body, tableColumns);
 
-    const sets  = Object.keys(payload).map(k => `${k}=?`).join(',');
-    const vals  = [...Object.values(payload), req.params.id];
-    const sql   = `UPDATE order_bookings SET ${sets} WHERE id=?`;
+    const sets = Object.keys(payload).map(k => `${k}=?`).join(',');
+    const vals = [...Object.values(payload), req.params.id];
+    const sql  = `UPDATE order_bookings SET ${sets} WHERE id=?`;
 
     console.log('[PUT] SQL:', sql);
     console.log('[PUT] values count:', vals.length);

@@ -4,6 +4,7 @@
 //   • AddressBlock component (same as CustomerMaster)
 //   • Validation: Contact No, Email, GST, PAN, TAN with inline counters + hint/error pills
 //   • Toast + dismissible inline error banner (same as CustomerMaster)
+//   • Export dropdown: CSV, Excel, Print Table
 
 import {
   useEffect,
@@ -29,6 +30,9 @@ import {
   AlertTriangle,
   MapPin,
   Mail,
+  Download,
+  Printer,
+  TableIcon,
 } from 'lucide-react';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -320,6 +324,216 @@ const BLANK: Supplier = {
 
 const API = '/api/suppliers';
 const PAGE_SIZE_OPTIONS = [5, 10, 25, 50];
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+function exportToCSV(rows: Supplier[]) {
+  const headers = ['Supplier ID','Type','Supplier Name','Contact No','Email','GST No','PAN No','TAN No','MSME','State','District','Status'];
+  const csvRows = [
+    headers.join(','),
+    ...rows.map((r) =>
+      [
+        r.supplier_id ?? '',
+        (r as any).type_name ?? '',
+        `"${(r.supplier_name ?? '').replace(/"/g, '""')}"`,
+        r.contact_no ?? '',
+        r.email ?? '',
+        r.gst_no ?? '',
+        r.pan_no ?? '',
+        r.tan_no ?? '',
+        r.msme ?? '',
+        r.state ?? '',
+        r.district ?? '',
+        r.status ?? '',
+      ].join(',')
+    ),
+  ];
+  const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `suppliers_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportToExcel(rows: Supplier[]) {
+  // Build a simple HTML table and use the Excel mime type trick
+  const headers = ['Supplier ID','Type','Supplier Name','Contact No','Email','GST No','PAN No','TAN No','MSME','State','District','Status'];
+  const th = headers.map((h) => `<th>${h}</th>`).join('');
+  const trs = rows.map((r) =>
+    `<tr>
+      <td>${r.supplier_id ?? ''}</td>
+      <td>${(r as any).type_name ?? ''}</td>
+      <td>${r.supplier_name ?? ''}</td>
+      <td>${r.contact_no ?? ''}</td>
+      <td>${r.email ?? ''}</td>
+      <td>${r.gst_no ?? ''}</td>
+      <td>${r.pan_no ?? ''}</td>
+      <td>${r.tan_no ?? ''}</td>
+      <td>${r.msme ?? ''}</td>
+      <td>${r.state ?? ''}</td>
+      <td>${r.district ?? ''}</td>
+      <td>${r.status ?? ''}</td>
+    </tr>`
+  ).join('');
+  const html = `<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `suppliers_${new Date().toISOString().slice(0,10)}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printTable(rows: Supplier[]) {
+  const headers = ['Sup. ID','Type','Supplier Name','Contact No','Email','GST No','MSME','State','Status'];
+  const th  = headers.map((h) => `<th>${h}</th>`).join('');
+  const trs = rows.map((r, i) =>
+    `<tr style="background:${i % 2 === 0 ? '#fff' : '#f8fafc'}">
+      <td>${r.supplier_id ?? '—'}</td>
+      <td>${(r as any).type_name ?? '—'}</td>
+      <td><strong>${r.supplier_name ?? ''}</strong></td>
+      <td>${r.contact_no ?? '—'}</td>
+      <td>${r.email ?? '—'}</td>
+      <td style="font-family:monospace">${r.gst_no ?? '—'}</td>
+      <td>${r.msme === 'Yes' ? 'MSME' : '—'}</td>
+      <td>${r.state ?? '—'}</td>
+      <td>${r.status ?? '—'}</td>
+    </tr>`
+  ).join('');
+  const win = window.open('', '_blank');
+  if (!win) return;
+  win.document.write(`
+    <html><head><title>Supplier Master</title>
+    <style>
+      body { font-family: 'DM Sans', Arial, sans-serif; font-size: 12px; color: #1e293b; margin: 24px; }
+      h2 { margin: 0 0 4px; font-size: 18px; }
+      p  { margin: 0 0 16px; font-size: 12px; color: #64748b; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th { background: #0f766e; color: #fff; padding: 8px 10px; text-align: left; white-space: nowrap; }
+      td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; }
+      @media print { body { margin: 8px; } }
+    </style>
+    </head><body>
+    <h2>Supplier Master</h2>
+    <p>Printed on ${new Date().toLocaleString()} &nbsp;·&nbsp; ${rows.length} record(s)</p>
+    <table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>
+    </body></html>
+  `);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); win.close(); }, 400);
+}
+
+// ─── Export Dropdown ──────────────────────────────────────────────────────────
+
+function ExportDropdown({ suppliers, isMobile }: { suppliers: Supplier[]; isMobile: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position:'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: open ? '#f0fdfa' : '#fff',
+          color: '#0f766e',
+          border: `1.5px solid ${open ? '#0f766e' : '#5eead4'}`,
+          borderRadius: 8, padding: '9px 14px',
+          fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          fontFamily: "'DM Sans', sans-serif",
+          whiteSpace: 'nowrap', transition: 'all 0.15s',
+          boxShadow: open ? '0 0 0 3px rgba(15,118,110,0.1)' : 'none',
+        }}
+      >
+        <Download size={14} />
+        {!isMobile && 'Export'}
+        <ChevronDown size={13} style={{ transition:'transform 0.2s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+          background: '#fff', border: '1px solid #e2e8f0',
+          borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+          minWidth: 192, zIndex: 500, overflow: 'hidden',
+          animation: 'toastIn 0.15s ease-out',
+        }}>
+          {/* Dropdown label */}
+          <div style={{ padding: '8px 14px 6px', borderBottom: '1px solid #f1f5f9' }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Export / Print
+            </span>
+          </div>
+
+          {/* CSV */}
+          <button
+            onClick={() => { exportToCSV(suppliers); setOpen(false); }}
+            style={dropItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0fdfa')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#eff6ff', color: '#3b82f6' }}>
+              <FileText size={13} />
+            </span>
+            Export as CSV
+          </button>
+
+          {/* Excel */}
+          <button
+            onClick={() => { exportToExcel(suppliers); setOpen(false); }}
+            style={dropItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0fdfa')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#f0fdf4', color: '#16a34a' }}>
+              <TableIcon size={13} />
+            </span>
+            Export as Excel
+          </button>
+
+          {/* Print */}
+          <button
+            onClick={() => { printTable(suppliers); setOpen(false); }}
+            style={{ ...dropItemStyle, borderTop: '1px solid #f1f5f9' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0fdfa')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#fef3c7', color: '#d97706' }}>
+              <Printer size={13} />
+            </span>
+            Print Table
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const dropItemStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 10,
+  width: '100%', padding: '9px 14px',
+  background: 'transparent', border: 'none', cursor: 'pointer',
+  fontSize: 13, fontWeight: 500, color: '#1e293b',
+  fontFamily: "'DM Sans', sans-serif",
+  textAlign: 'left', transition: 'background 0.12s',
+};
+
+const dropIconWrap: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: 26, height: 26, borderRadius: 6, flexShrink: 0,
+};
 
 // ─── Responsive hook ─────────────────────────────────────────────────────────
 function useWidth() {
@@ -754,6 +968,8 @@ export default function SupplierMaster() {
             >
               <Settings size={14} /> Manage Types
             </button>
+            {/* ── EXPORT DROPDOWN ── */}
+            <ExportDropdown suppliers={suppliers} isMobile={isMobile} />
             <button className="sm-add-btn" onClick={openCreate}>
               <Plus size={15} /> New Supplier
             </button>

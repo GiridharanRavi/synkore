@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🧵 Fabric Flow — Full Stack Project
 
 React TypeScript + Node.js + MySQL fabric management system.
@@ -73,3 +74,6 @@ npm run dev
 
 - **Admin** → full access to all modules + dashboard stats
 - **Client** → can view their own orders and sample requests
+=======
+# synkore
+>>>>>>> 77ade8b11f392f9cb2f32a9b2cb7b17be6ae20d7

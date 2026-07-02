@@ -1,9 +1,7 @@
-// frontend/src/pages/client/ClientProfile.tsx
 import { useEffect, useRef, useState } from 'react';
 import axios from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 
-/* ─── Types ────────────────────────────────────────────── */
 interface Profile {
   id?: number;
   user_id?: number;
@@ -31,10 +29,9 @@ interface Profile {
   avatar_url?: string;
   created_at?: string;
   updated_at?: string;
-  _seeded?: boolean;  // ← pre-filled from customer_master, not yet saved
+  _seeded?: boolean;
 }
 
-/* ─── Helpers ───────────────────────────────────────────── */
 function getUser() {
   try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; }
 }
@@ -45,7 +42,6 @@ function getInitials(name?: string) {
   return p.length === 1 ? p[0][0].toUpperCase() : (p[0][0] + p[p.length - 1][0]).toUpperCase();
 }
 
-/* ─── Section wrapper ───────────────────────────────────── */
 function Section({ title, icon, children }: { title: string; icon: string; children: React.ReactNode }) {
   return (
     <div style={SC.section}>
@@ -58,7 +54,6 @@ function Section({ title, icon, children }: { title: string; icon: string; child
   );
 }
 
-/* ─── Input field ───────────────────────────────────────── */
 function Field({
   label, name, value, onChange, type = 'text', placeholder = '', readonly = false,
 }: {
@@ -89,7 +84,6 @@ function Field({
   );
 }
 
-/* ─── Toggle ────────────────────────────────────────────── */
 function Toggle({ label, desc, checked, onChange }: {
   label: string; desc: string; checked: boolean; onChange: (v: boolean) => void;
 }) {
@@ -111,14 +105,14 @@ function Toggle({ label, desc, checked, onChange }: {
   );
 }
 
-/* ══════════════════════════════════════════════════════════
-   Main Component
-══════════════════════════════════════════════════════════ */
 export default function ClientProfile() {
   const { user: authUser } = useAuth();
-  const localUser  = getUser();
-  const userId     = authUser?.id || localUser?.id;
-  const customerId = localUser?.customer_id;
+  const localUser = getUser();
+
+  // ── Primary identifier: customer_id from JWT (most reliable) ──────────────
+  // Falls back to localStorage customer_id, then authUser.id, then localUser.id
+  const customerId = authUser?.customer_id || localUser?.customer_id;
+  const userId     = authUser?.id          || localUser?.id;
 
   const [profile,       setProfile]       = useState<Profile>({});
   const [loading,       setLoading]       = useState(true);
@@ -129,38 +123,55 @@ export default function ClientProfile() {
   const [avatarPreview, setAvatarPreview] = useState<string>('');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  /* ── Load profile (with customer_master seed fallback) ── */
+  // ── Load profile ───────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!userId) { setLoading(false); return; }
-    axios.get(`/client-profile?user_id=${userId}`)
+    if (!customerId && !userId) { setLoading(false); return; }
+
+    // Always prefer customer_id for lookup — it's the stable identifier
+    const query = customerId
+      ? `customer_id=${encodeURIComponent(customerId)}`
+      : `user_id=${userId}`;
+
+    axios.get(`/client-profile?${query}`)
       .then(res => {
         const p: Profile = res.data || {};
-        // Merge seeded data properly into state
-        setProfile(prev => ({ ...prev, ...p }));
+        setProfile(p);
         if (p.avatar_url) setAvatarPreview(p.avatar_url);
         if (p._seeded)    setIsSeeded(true);
       })
       .catch(err => {
         console.error('Profile load error:', err?.response?.data);
-        // Don't block UI on load failure
       })
       .finally(() => setLoading(false));
-  }, [userId]);
+  }, [customerId, userId]);
 
-  /* ── Save ── */
+  // ── Save ───────────────────────────────────────────────────────────────────
   const save = async () => {
+    // Need at least customer_id to save (user_id in users table may not match)
+    if (!customerId && !userId) {
+      setError('No identifier found in session. Please log out and log back in.');
+      return;
+    }
+
     setSaving(true);
     setError('');
     try {
-      // Never send base64 to backend
       const isBase64 = avatarPreview?.startsWith('data:');
 
-      await axios.put('/client-profile', {
+      const payload = {
         ...profile,
+        // Send customer_id as primary anchor — backend no longer requires user_id in users table
+        customer_id: customerId || profile.customer_id || undefined,
+        // Still send user_id if available (stored but not validated against users table)
+        user_id:     userId ? Number(userId) : undefined,
         avatar_url:  isBase64 ? undefined : (profile.avatar_url || undefined),
-        user_id:     userId,
-        customer_id: customerId || profile.customer_id,
-      });
+        _seeded:     undefined,
+      };
+
+      const res = await axios.put('/client-profile', payload);
+
+      setProfile(res.data || profile);
+      if (res.data?.avatar_url) setAvatarPreview(res.data.avatar_url);
 
       setIsSeeded(false);
       setSaved(true);
@@ -176,11 +187,9 @@ export default function ClientProfile() {
     }
   };
 
-  /* ── Field change ── */
   const handle = (name: string, value: string) =>
     setProfile(prev => ({ ...prev, [name]: value }));
 
-  /* ── Avatar upload ── */
   const handleAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -217,7 +226,6 @@ export default function ClientProfile() {
         ::-webkit-scrollbar-thumb { background:#e2e8f0; border-radius:99px; }
       `}</style>
 
-      {/* ── Page header ── */}
       <div style={SC.pageHead}>
         <div>
           <div style={SC.eyebrow}>CLIENT PORTAL</div>
@@ -230,30 +238,31 @@ export default function ClientProfile() {
           onClick={save}
           disabled={saving}
         >
-          {saving ? <><span style={SC.btnSpinner} />Saving...</> : saved ? <>✅ Saved!</> : <>💾 Save Changes</>}
+          {saving ? <><span style={SC.btnSpinner} /> Saving...</> : saved ? <>✅ Saved!</> : <>💾 Save Changes</>}
         </button>
       </div>
 
-      {/* ── Seeded info banner ── */}
+      {/* No identifier warning */}
+      {!customerId && !userId && (
+        <div style={SC.errorBanner}>
+          ⚠️ No Customer ID or User ID found in session. Please log out and log back in.
+        </div>
+      )}
+
       {isSeeded && (
         <div style={SC.seededBanner}>
           <span style={{ fontSize: 16 }}>ℹ️</span>
           <span>
             We've pre-filled your profile from your customer record.
-            Review the details and click{' '}
-            <strong>Save Changes</strong> to confirm.
+            Review the details and click <strong>Save Changes</strong> to confirm.
           </span>
           <button style={SC.seededClose} onClick={() => setIsSeeded(false)} title="Dismiss">✕</button>
         </div>
       )}
 
-      {/* ── Error banner ── */}
-      {error && (
-        <div style={SC.errorBanner}>⚠️ {error}</div>
-      )}
+      {error && <div style={SC.errorBanner}>⚠️ {error}</div>}
 
       <div style={SC.layout}>
-        {/* ── Left: Avatar card ── */}
         <div style={SC.leftCol}>
           <div style={SC.avatarCard} className="pr-section">
             <div style={{ position: 'relative', display: 'inline-block' }}>
@@ -281,7 +290,6 @@ export default function ClientProfile() {
               </button>
             )}
 
-            {/* Quick stats */}
             <div style={SC.statsList}>
               {[
                 { icon: '🏢', label: 'Company',     value: profile.company_name || '—' },
@@ -299,7 +307,6 @@ export default function ClientProfile() {
               ))}
             </div>
 
-            {/* Seeded indicator on avatar card */}
             {isSeeded && (
               <div style={SC.seededCardBadge}>⚡ Pre-filled from customer record</div>
             )}
@@ -313,10 +320,7 @@ export default function ClientProfile() {
           </div>
         </div>
 
-        {/* ── Right: Form sections ── */}
         <div style={SC.rightCol}>
-
-          {/* Personal */}
           <div className="pr-section" style={{ animationDelay: '0.05s' }}>
             <Section title="Personal Information" icon="👤">
               <div style={SC.grid2}>
@@ -330,7 +334,6 @@ export default function ClientProfile() {
             </Section>
           </div>
 
-          {/* Company */}
           <div className="pr-section" style={{ animationDelay: '0.1s' }}>
             <Section title="Company Details" icon="🏢">
               <div style={SC.grid2}>
@@ -342,7 +345,6 @@ export default function ClientProfile() {
             </Section>
           </div>
 
-          {/* Address */}
           <div className="pr-section" style={{ animationDelay: '0.15s' }}>
             <Section title="Address" icon="📍">
               <div style={SC.grid1}>
@@ -358,73 +360,25 @@ export default function ClientProfile() {
             </Section>
           </div>
 
-          {/* Preferences */}
-          <div className="pr-section" style={{ animationDelay: '0.2s' }}>
-            <Section title="Preferences" icon="⚙️">
-              <div style={SC.grid2}>
-                <div style={SC.field}>
-                  <label style={SC.label}>Language</label>
-                  <select value={profile.language || 'en'} onChange={e => handle('language', e.target.value)}
-                    style={{ ...SC.input, cursor: 'pointer' }}>
-                    <option value="en">English</option>
-                    <option value="ta">Tamil</option>
-                    <option value="hi">Hindi</option>
-                  </select>
-                </div>
-                <div style={SC.field}>
-                  <label style={SC.label}>Timezone</label>
-                  <select value={profile.timezone || 'Asia/Kolkata'} onChange={e => handle('timezone', e.target.value)}
-                    style={{ ...SC.input, cursor: 'pointer' }}>
-                    <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
-                    <option value="Asia/Dubai">Asia/Dubai (GST)</option>
-                    <option value="Europe/London">Europe/London (GMT)</option>
-                    <option value="America/New_York">America/New_York (EST)</option>
-                  </select>
-                </div>
-              </div>
+        
 
-              <div style={{ marginTop: 16 }}>
-                <div style={SC.notifLabel}>🔔 Notification Preferences</div>
-                <div style={SC.toggleList}>
-                  <Toggle label="In-App Notifications"  desc="Show alerts inside the dashboard bell"
-                    checked={profile.notification_in_app ?? true}
-                    onChange={v => setProfile(p => ({ ...p, notification_in_app: v }))} />
-                  <Toggle label="Email Notifications"   desc="Receive updates to your registered email"
-                    checked={profile.notification_email ?? true}
-                    onChange={v => setProfile(p => ({ ...p, notification_email: v }))} />
-                  <Toggle label="SMS Notifications"     desc="Get SMS alerts on your phone number"
-                    checked={profile.notification_sms ?? false}
-                    onChange={v => setProfile(p => ({ ...p, notification_sms: v }))} />
-                </div>
-              </div>
-            </Section>
-          </div>
-
-          {/* Account info (read-only) */}
           <div className="pr-section" style={{ animationDelay: '0.25s' }}>
             <Section title="Account Information" icon="🔐">
               <div style={SC.grid2}>
-                <Field label="Customer ID"   name="customer_id" value={customerId || '—'} onChange={() => {}} readonly />
-                <Field label="User ID"       name="user_id"     value={String(userId || '—')} onChange={() => {}} readonly />
-                <Field label="Account Role"  name="role"        value="Client" onChange={() => {}} readonly />
+                <Field label="Customer ID"   name="customer_id" value={customerId || '—'}          onChange={() => {}} readonly />
+                <Field label="User ID"       name="user_id"     value={String(userId || '—')}       onChange={() => {}} readonly />
+                <Field label="Account Role"  name="role"        value="Client"                      onChange={() => {}} readonly />
                 <Field label="Account Since" name="created_at"
                   value={profile.created_at
-                    ? new Date(profile.created_at).toLocaleDateString('en-IN',
-                        { day: '2-digit', month: 'short', year: 'numeric' })
+                    ? new Date(profile.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
                     : '—'}
                   onChange={() => {}} readonly />
               </div>
             </Section>
           </div>
 
-          {/* Bottom save */}
           <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 24 }}>
-            <button
-              className="pr-save-btn"
-              style={{ ...SC.saveBtn, opacity: saving ? 0.7 : 1 }}
-              onClick={save}
-              disabled={saving}
-            >
+            <button className="pr-save-btn" style={{ ...SC.saveBtn, opacity: saving ? 0.7 : 1 }} onClick={save} disabled={saving}>
               {saving ? '⏳ Saving...' : saved ? '✅ Saved!' : '💾 Save Changes'}
             </button>
           </div>
@@ -434,45 +388,22 @@ export default function ClientProfile() {
   );
 }
 
-/* ── Styles ──────────────────────────────────────────────── */
 const SC: Record<string, React.CSSProperties> = {
   page:      { fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '100%', paddingBottom: 40 },
   pageHead:  { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, gap: 16, flexWrap: 'wrap' },
   eyebrow:   { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: '#6366f1', textTransform: 'uppercase', marginBottom: 4 },
   pageTitle: { fontSize: 22, fontWeight: 800, color: '#0f172a', margin: 0 },
   pageSub:   { fontSize: 13, color: '#64748b', marginTop: 3 },
-
-  /* Banners */
-  seededBanner: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8',
-    borderRadius: 10, padding: '10px 16px', marginBottom: 16,
-    fontSize: 13, fontWeight: 600, animation: 'pr-slideIn 0.3s ease',
-  },
-  seededClose: {
-    marginLeft: 'auto', background: 'transparent', border: 'none',
-    color: '#93c5fd', cursor: 'pointer', fontSize: 14, fontWeight: 700,
-    padding: '0 4px', lineHeight: 1,
-  },
-  seededCardBadge: {
-    marginTop: 12, fontSize: 10.5, fontWeight: 700,
-    color: '#2563eb', background: '#dbeafe',
-    borderRadius: 20, padding: '3px 10px', display: 'inline-block',
-  },
-  errorBanner: {
-    background: '#fef2f2', border: '1px solid #fca5a5', color: '#dc2626',
-    borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600,
-  },
-
+  seededBanner: { display: 'flex', alignItems: 'center', gap: 10, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8', borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600, animation: 'pr-slideIn 0.3s ease' },
+  seededClose: { marginLeft: 'auto', background: 'transparent', border: 'none', color: '#93c5fd', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '0 4px', lineHeight: 1 },
+  seededCardBadge: { marginTop: 12, fontSize: 10.5, fontWeight: 700, color: '#2563eb', background: '#dbeafe', borderRadius: 20, padding: '3px 10px', display: 'inline-block' },
+  errorBanner: { background: '#fef2f2', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 13, fontWeight: 600 },
   saveBtn:    { display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 22px', borderRadius: 10, border: 'none', background: '#6366f1', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', transition: 'all .18s', boxShadow: '0 2px 10px rgba(99,102,241,0.25)', fontFamily: 'inherit' },
   btnSpinner: { display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', borderRadius: '50%', animation: 'pr-spin 0.7s linear infinite' },
   spinner:    { display: 'inline-block', width: 28, height: 28, border: '3px solid #e2e8f0', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'pr-spin 0.8s linear infinite' },
-
   layout:  { display: 'grid', gridTemplateColumns: '280px 1fr', gap: 20, alignItems: 'start' },
   leftCol: { position: 'sticky', top: 80 },
   rightCol:{ display: 'flex', flexDirection: 'column', gap: 16 },
-
-  /* Avatar card */
   avatarCard:        { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 16, padding: 24, textAlign: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' },
   avatarImg:         { width: 84, height: 84, borderRadius: '50%', objectFit: 'cover', border: '3px solid #e2e8f0' },
   avatarPlaceholder: { width: 84, height: 84, borderRadius: '50%', background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, fontWeight: 800, letterSpacing: '-0.02em' },
@@ -488,22 +419,16 @@ const SC: Record<string, React.CSSProperties> = {
   statLabel:         { fontSize: 9.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 },
   statValue:         { fontSize: 12, fontWeight: 600, color: '#374151', marginTop: 1, wordBreak: 'break-word' },
   lastUpdated:       { marginTop: 14, fontSize: 10.5, color: '#94a3b8', borderTop: '1px solid #f1f5f9', paddingTop: 10 },
-
-  /* Sections */
   section:  { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' },
   secHead:  { display: 'flex', alignItems: 'center', gap: 10, padding: '13px 18px', borderBottom: '1px solid #f1f5f9', background: '#fafbff' },
   secIcon:  { fontSize: 16 },
   secTitle: { fontSize: 14, fontWeight: 800, color: '#0f172a' },
   secBody:  { padding: '16px 18px' },
-
-  /* Fields */
   grid2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
   grid1: { display: 'grid', gridTemplateColumns: '1fr', gap: 12 },
   field: { display: 'flex', flexDirection: 'column', gap: 5 },
   label: { fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 },
   input: { padding: '9px 12px', borderRadius: 8, border: '1.5px solid #e2e8f0', fontSize: 13, outline: 'none', fontFamily: "'DM Sans', sans-serif", transition: 'border .15s, box-shadow .15s', color: '#0f172a', width: '100%', boxSizing: 'border-box' },
-
-  /* Preferences */
   notifLabel:  { fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 10 },
   toggleList:  { display: 'flex', flexDirection: 'column', gap: 0, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' },
   toggleRow:   { display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', borderBottom: '1px solid #f1f5f9' },

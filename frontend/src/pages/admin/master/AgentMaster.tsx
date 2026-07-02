@@ -27,6 +27,9 @@ import {
   Info,
   AlertTriangle,
   Mail,
+  Download,
+  FileSpreadsheet,
+  Printer,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -178,6 +181,150 @@ function SectionHead({ title, open, onToggle }: { title: string; open: boolean; 
   );
 }
 
+// ─── Export Dropdown ─────────────────────────────────────────────────────────
+
+function ExportDropdown({ agents, allAgents, onExportAll }: {
+  agents: Agent[];
+  allAgents: () => Promise<Agent[]>;
+  onExportAll: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const exportCSV = async () => {
+    setOpen(false);
+    const data = await allAgents();
+    const headers = ['Agent ID', 'Name', 'Type', 'Email', 'Contact No', 'State', 'District', 'GST No', 'PAN No', 'TAN No', 'Commission %', 'Status'];
+    const rows = data.map((a) => [
+      a.agent_code ?? '',
+      a.agent_name,
+      a.type,
+      a.email,
+      a.contact_no,
+      a.state,
+      a.district,
+      a.gst_no,
+      a.pan_no,
+      a.tan_no,
+      a.commission_pct,
+      a.status,
+    ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`));
+
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `agents_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const exportExcel = async () => {
+    setOpen(false);
+    const data = await allAgents();
+    // Build a simple HTML table that Excel can open
+    const headers = ['Agent ID', 'Name', 'Type', 'Email', 'Contact No', 'State', 'District', 'GST No', 'PAN No', 'TAN No', 'Commission %', 'Status'];
+    const ths = headers.map((h) => `<th>${h}</th>`).join('');
+    const trs = data.map((a) => {
+      const cells = [
+        a.agent_code ?? '', a.agent_name, a.type, a.email, a.contact_no,
+        a.state, a.district, a.gst_no, a.pan_no, a.tan_no, a.commission_pct, a.status,
+      ].map((v) => `<td>${String(v ?? '')}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"/><style>th{background:#7c3aed;color:#fff;font-weight:bold;}td,th{border:1px solid #ccc;padding:6px 10px;font-size:12px;}</style></head>
+<body><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `agents_${new Date().toISOString().slice(0, 10)}.xls`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const printTable = async () => {
+    setOpen(false);
+    const data = await allAgents();
+    const headers = ['Agent ID', 'Name', 'Type', 'Email', 'Contact No', 'State', 'Comm %', 'Status'];
+    const ths = headers.map((h) => `<th>${h}</th>`).join('');
+    const trs = data.map((a, i) => {
+      const bg = i % 2 === 0 ? '#fff' : '#faf5ff';
+      const cells = [
+        a.agent_code ?? '', a.agent_name, a.type, a.email,
+        a.contact_no, a.state,
+        a.commission_pct ? `${a.commission_pct}%` : '—', a.status,
+      ].map((v) => `<td>${String(v ?? '')}</td>`).join('');
+      return `<tr style="background:${bg}">${cells}</tr>`;
+    }).join('');
+
+    const win = window.open('', '_blank', 'width=1000,height=700');
+    if (!win) return;
+    win.document.write(`<!DOCTYPE html><html><head><title>Agent Master</title>
+<style>
+  body { font-family: 'DM Sans', Arial, sans-serif; font-size: 12px; color: #1e293b; margin: 0; padding: 20px; }
+  h2 { margin: 0 0 4px; font-size: 18px; color: #7c3aed; }
+  p { margin: 0 0 16px; font-size: 12px; color: #64748b; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #7c3aed; color: #fff; padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 700; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
+  @media print { body { padding: 10px; } }
+</style></head>
+<body>
+<h2>Agent Master</h2>
+<p>Exported on ${new Date().toLocaleString()} &nbsp;|&nbsp; Total: ${data.length} agents</p>
+<table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>
+<script>window.onload=()=>{window.print();}<\/script>
+</body></html>`);
+    win.document.close();
+  };
+
+  const items: { label: string; icon: React.ReactNode; color: string; action: () => void }[] = [
+    { label: 'Export as CSV',   icon: <FileText       size={14} />, color: '#7c3aed', action: exportCSV   },
+    { label: 'Export as Excel', icon: <FileSpreadsheet size={14} />, color: '#16a34a', action: exportExcel },
+    { label: 'Print Table',     icon: <Printer        size={14} />, color: '#2563eb', action: printTable  },
+  ];
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        className="am-export-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Download size={14} />
+        Export
+        <ChevronDown size={13} style={{ marginLeft: 2, transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+      </button>
+
+      {open && (
+        <div className="am-export-menu" role="menu">
+          <p className="am-export-menu-title">EXPORT / PRINT</p>
+          {items.map((item) => (
+            <button
+              key={item.label}
+              className="am-export-item"
+              onClick={item.action}
+              role="menuitem"
+            >
+              <span style={{ color: item.color, display: 'flex', alignItems: 'center' }}>{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const INDIAN_STATES = [
@@ -321,6 +468,19 @@ export default function AgentMaster() {
     setLoading(false);
   };
 
+  // Fetch ALL agents (no pagination) for export
+  const fetchAllAgents = async (): Promise<Agent[]> => {
+    try {
+      const qs = new URLSearchParams({ search, limit: '99999', ...(filterSt ? { status: filterSt } : {}) });
+      const res  = await fetch(`${API}?${qs}`);
+      const data = await res.json();
+      return data.data ?? [];
+    } catch {
+      pushToast('error', 'Export Failed', 'Could not fetch all agents for export.');
+      return [];
+    }
+  };
+
   useEffect(() => { loadAgents(); }, [search, filterSt, page, pageSize]);
   useEffect(() => { setPage(1); }, [search, filterSt]);
   useEffect(() => { document.body.style.overflow = showForm ? 'hidden' : ''; return () => { document.body.style.overflow = ''; }; }, [showForm]);
@@ -437,6 +597,7 @@ export default function AgentMaster() {
         *, *::before, *::after { box-sizing: border-box; }
         @keyframes toastIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
         @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes menuIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
 
         .am-wrap { font-family:'DM Sans',sans-serif; font-size:14px; color:#1e293b; }
 
@@ -445,8 +606,48 @@ export default function AgentMaster() {
         .am-page-header p  { margin:3px 0 0; font-size:13px; color:#64748b; }
         @media(min-width:576px){ .am-page-header h1 { font-size:22px; } }
 
-        .am-add-btn { display:flex; align-items:center; gap:6px; background:#7c3aed; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 6px rgba(124,58,237,0.3); white-space:nowrap; flex-shrink:0; touch-action:manipulation; }
+        /* Header right-side action group */
+        .am-header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+
+        .am-add-btn { display:flex; align-items:center; gap:6px; background:#7c3aed; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 6px rgba(124,58,237,0.3); white-space:nowrap; touch-action:manipulation; }
         .am-add-btn:hover { background:#6d28d9; }
+
+        /* Export button */
+        .am-export-btn {
+          display:flex; align-items:center; gap:6px;
+          background:#fff; color:#374151;
+          border:1.5px solid #cbd5e1; border-radius:8px;
+          padding:8px 14px; font-size:13px; font-weight:600;
+          cursor:pointer; font-family:'DM Sans',sans-serif;
+          white-space:nowrap; touch-action:manipulation;
+          box-shadow:0 1px 3px rgba(0,0,0,0.06);
+          transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .am-export-btn:hover { border-color:#7c3aed; color:#7c3aed; box-shadow:0 2px 6px rgba(124,58,237,0.12); }
+
+        /* Export dropdown menu */
+        .am-export-menu {
+          position:absolute; top:calc(100% + 6px); right:0;
+          background:#fff; border:1px solid #e2e8f0;
+          border-radius:12px; padding:8px;
+          min-width:190px; z-index:3000;
+          box-shadow:0 8px 28px rgba(0,0,0,0.13);
+          animation:menuIn 0.18s ease-out;
+        }
+        .am-export-menu-title {
+          font-size:10px; font-weight:700; color:#94a3b8;
+          letter-spacing:0.08em; text-transform:uppercase;
+          padding:4px 8px 6px; margin:0;
+        }
+        .am-export-item {
+          display:flex; align-items:center; gap:10px;
+          width:100%; padding:9px 10px; border:none; background:none;
+          border-radius:8px; cursor:pointer; font-size:13px; font-weight:500;
+          color:#374151; font-family:'DM Sans',sans-serif;
+          text-align:left; transition:background 0.12s;
+          touch-action:manipulation;
+        }
+        .am-export-item:hover { background:#f5f3ff; color:#7c3aed; }
 
         .am-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
         .am-search-wrap { position:relative; flex:1; min-width:180px; max-width:100%; }
@@ -531,7 +732,16 @@ export default function AgentMaster() {
             <h1>Agent Master</h1>
             <p>{total} agent{total !== 1 ? 's' : ''} registered</p>
           </div>
-          <button className="am-add-btn" onClick={openCreate}><Plus size={15} /> New Agent</button>
+
+          {/* Action buttons */}
+          <div className="am-header-actions">
+            <ExportDropdown
+              agents={agents}
+              allAgents={fetchAllAgents}
+              onExportAll={() => {}}
+            />
+            <button className="am-add-btn" onClick={openCreate}><Plus size={15} /> New Agent</button>
+          </div>
         </div>
 
         {/* TOOLBAR */}

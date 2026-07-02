@@ -8,13 +8,14 @@
 //      matching YarnPurchaseOrder's dropdown style (purple theme)
 // FIX: handleDelete in YarnMaster now checks res.ok and surfaces the real error message
 // FIX: SimpleMaster delete now uses its own api/load instead of YarnMaster's globals
+// ADD: Export dropdown (CSV, Excel, Print Table) on Yarn Master tab
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Plus, Search, X, ChevronDown, ChevronUp,
   CheckSquare, Square, PlusCircle, Loader2,
   AlertCircle, CheckCircle2, Info, AlertTriangle, Trash2,
-  Award,
+  Award, Download, FileText, Printer,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────
@@ -124,6 +125,211 @@ function ToastContainer({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+function exportYarnCSV(rows: Yarn[]) {
+  const headers = ['Yarn Code','Category','Yarn Type','Count Value','Ply','UOM','Count System','Short Name','Color','Status'];
+  const csvRows = [
+    headers.join(','),
+    ...rows.map((r) =>
+      [
+        r.yarn_code ?? '',
+        r.category ?? '',
+        `"${(r.yarn_type ?? '').replace(/"/g, '""')}"`,
+        r.count_value ?? '',
+        r.ply ?? '',
+        r.uom ?? '',
+        `"${(r.count_system_name ?? '').replace(/"/g, '""')}"`,
+        `"${(r.short_name ?? '').replace(/"/g, '""')}"`,
+        r.color_name ?? '',
+        r.status ?? '',
+      ].join(',')
+    ),
+  ];
+  const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `yarns_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportYarnExcel(rows: Yarn[]) {
+  const headers = ['Yarn Code','Category','Yarn Type','Count Value','Ply','UOM','Count System','Short Name','Color','Status'];
+  const th  = headers.map((h) => `<th>${h}</th>`).join('');
+  const trs = rows.map((r) =>
+    `<tr>
+      <td>${r.yarn_code ?? ''}</td>
+      <td>${r.category ?? ''}</td>
+      <td>${r.yarn_type ?? ''}</td>
+      <td>${r.count_value ?? ''}</td>
+      <td>${r.ply ?? ''}</td>
+      <td>${r.uom ?? ''}</td>
+      <td>${r.count_system_name ?? ''}</td>
+      <td>${r.short_name ?? ''}</td>
+      <td>${r.color_name ?? ''}</td>
+      <td>${r.status ?? ''}</td>
+    </tr>`
+  ).join('');
+  const html = `<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`;
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `yarns_${new Date().toISOString().slice(0, 10)}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printYarnTable(rows: Yarn[]) {
+  const headers = ['Yarn Code','Category','Yarn Type','Count','Ply','UOM','Count System','Short Name','Status'];
+  const th  = headers.map((h) => `<th>${h}</th>`).join('');
+  const trs = rows.map((r, i) =>
+    `<tr style="background:${i % 2 === 0 ? '#fff' : '#f8fafc'}">
+      <td style="font-family:monospace;font-weight:700">${r.yarn_code ?? '—'}</td>
+      <td>${r.category ?? '—'}</td>
+      <td>${r.yarn_type ?? '—'}</td>
+      <td style="font-family:monospace">${r.count_value ?? '—'}</td>
+      <td>${r.ply ?? '—'}</td>
+      <td>${r.uom ?? '—'}</td>
+      <td>${r.count_system_name ?? '—'}</td>
+      <td>${r.short_name ?? '—'}</td>
+      <td>${r.status ?? '—'}</td>
+    </tr>`
+  ).join('');
+  const win = window.open('', '_blank');
+  if (!win) return;
+  win.document.write(`
+    <html><head><title>Yarn Master</title>
+    <style>
+      body { font-family: 'DM Sans', Arial, sans-serif; font-size: 12px; color: #1e293b; margin: 24px; }
+      h2 { margin: 0 0 4px; font-size: 18px; }
+      p  { margin: 0 0 16px; font-size: 12px; color: #64748b; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th { background: #2563eb; color: #fff; padding: 8px 10px; text-align: left; white-space: nowrap; }
+      td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; }
+      @media print { body { margin: 8px; } }
+    </style>
+    </head><body>
+    <h2>Yarn Master</h2>
+    <p>Printed on ${new Date().toLocaleString()} &nbsp;·&nbsp; ${rows.length} record(s)</p>
+    <table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>
+    </body></html>
+  `);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); win.close(); }, 400);
+}
+
+// ─── Export Dropdown ──────────────────────────────────────────────────────────
+
+const dropItemStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 10,
+  width: '100%', padding: '9px 14px',
+  background: 'transparent', border: 'none', cursor: 'pointer',
+  fontSize: 13, fontWeight: 500, color: '#1e293b',
+  fontFamily: "'DM Sans', sans-serif",
+  textAlign: 'left', transition: 'background 0.12s',
+};
+
+const dropIconWrap: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: 26, height: 26, borderRadius: 6, flexShrink: 0,
+};
+
+function ExportDropdown({ yarns, isMobile }: { yarns: Yarn[]; isMobile: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: open ? '#eff6ff' : '#fff',
+          color: '#2563eb',
+          border: `1.5px solid ${open ? '#2563eb' : '#93c5fd'}`,
+          borderRadius: 8, padding: '9px 14px',
+          fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          fontFamily: "'DM Sans', sans-serif",
+          whiteSpace: 'nowrap', transition: 'all 0.15s',
+          boxShadow: open ? '0 0 0 3px rgba(37,99,235,0.1)' : 'none',
+        }}
+      >
+        <Download size={14} />
+        {!isMobile && 'Export'}
+        <ChevronDown size={13} style={{ transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+          background: '#fff', border: '1px solid #e2e8f0',
+          borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+          minWidth: 192, zIndex: 500, overflow: 'hidden',
+          animation: 'toastIn 0.15s ease-out',
+        }}>
+          {/* Label */}
+          <div style={{ padding: '8px 14px 6px', borderBottom: '1px solid #f1f5f9' }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Export / Print
+            </span>
+          </div>
+
+          {/* CSV */}
+          <button
+            onClick={() => { exportYarnCSV(yarns); setOpen(false); }}
+            style={dropItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#eff6ff', color: '#3b82f6' }}>
+              <FileText size={13} />
+            </span>
+            Export as CSV
+          </button>
+
+          {/* Excel */}
+          <button
+            onClick={() => { exportYarnExcel(yarns); setOpen(false); }}
+            style={dropItemStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#f0fdf4', color: '#16a34a' }}>
+              <Download size={13} />
+            </span>
+            Export as Excel
+          </button>
+
+          {/* Print */}
+          <button
+            onClick={() => { printYarnTable(yarns); setOpen(false); }}
+            style={{ ...dropItemStyle, borderTop: '1px solid #f1f5f9' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ ...dropIconWrap, background: '#fef3c7', color: '#d97706' }}>
+              <Printer size={13} />
+            </span>
+            Print Table
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -375,7 +581,6 @@ function CertChipSelector({ certifications, selectedIds, onToggle, emptyLabel }:
 }
 
 // ─── Generic Simple Master (Yarn Type & Count System) ────────
-// ★ FIX: handleDelete now uses the prop `api` and local `load()` — not YarnMaster globals
 
 interface SimpleMasterProps<T extends { id?: number; status: string }> {
   title:     string;
@@ -436,7 +641,6 @@ function SimpleMaster<T extends { id?: number; status: string }>({
     setSaving(false);
   };
 
-  // ★ FIX: use `api` prop (not API_YARNS) and local `load()` (not loadYarns)
   const handleDelete = async (id: number) => {
     if (!confirm(`Delete this ${title} record?`)) return;
     try {
@@ -762,7 +966,6 @@ export default function YarnMaster() {
   };
 
   // ── Delete ────────────────────────────────────────────────
-  // ★ FIX: checks res.ok and surfaces the real backend error message
 
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this yarn and all its fiber data?')) return;
@@ -1018,12 +1221,18 @@ export default function YarnMaster() {
 
         {tab === 'yarn' && (
           <>
+            {/* ── PAGE HEADER with Export ── */}
             <div className="cm-page-header">
               <div>
                 <h1>Yarn Master</h1>
                 <p>{total} yarn{total !== 1 ? 's' : ''} registered</p>
               </div>
-              <button className="cm-add-btn" onClick={openCreate}><Plus size={15} /> New Yarn</button>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {/* Export dropdown */}
+                <ExportDropdown yarns={yarns} isMobile={isMobile} />
+                {/* New Yarn button */}
+                <button className="cm-add-btn" onClick={openCreate}><Plus size={15} /> New Yarn</button>
+              </div>
             </div>
 
             <div className="cm-toolbar">

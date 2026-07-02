@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../db/connection');
 
 const { auth } = require('../middleware/auth');
+const { notifySampleNew, notifySampleStatus } = require('./notifications_routes');
 
 const multer = require('multer');
 
@@ -310,6 +311,24 @@ router.post(
           ]
         );
 
+      // =====================================
+      // NOTIFY CLIENT — new sample request logged
+      // Non-blocking: a notify failure should never
+      // fail the sample-request creation itself.
+      // =====================================
+
+      if (customer_id) {
+        try {
+          await notifySampleNew(db, {
+            customer_id:  String(customer_id).trim(),
+            request_code: String(request_code).trim(),
+            id: result.insertId,
+          });
+        } catch (notifyErr) {
+          console.error('[CREATE SAMPLE] notify failed:', notifyErr.message);
+        }
+      }
+
       res.status(201).json({
 
         message:
@@ -422,6 +441,8 @@ router.put(
         });
       }
 
+      const oldStatus = check[0].status;
+
       // =====================================
       // IMAGE UPDATE
       // =====================================
@@ -491,6 +512,13 @@ router.put(
           : parseFloat(quantity_meters);
 
       // =====================================
+      // STATUS (captured before the UPDATE so we can
+      // compare against oldStatus for the notify check)
+      // =====================================
+
+      const newStatus = status || 'pending';
+
+      // =====================================
       // UPDATE
       // =====================================
 
@@ -558,13 +586,30 @@ router.put(
             ? String(customer_comments).trim()
             : null,
 
-          status || 'pending',
+          newStatus,
 
           image_url,
 
           id,
         ]
       );
+
+      // =====================================
+      // NOTIFY CLIENT — only when status actually changed
+      // =====================================
+
+      if (customer_id && newStatus !== oldStatus) {
+        try {
+          await notifySampleStatus(db, {
+            customer_id:  String(customer_id).trim(),
+            request_code: check[0].request_code,
+            status:       newStatus,
+            id,
+          });
+        } catch (notifyErr) {
+          console.error('[UPDATE SAMPLE] notify failed:', notifyErr.message);
+        }
+      }
 
       res.json({
         message:

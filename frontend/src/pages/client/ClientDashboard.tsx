@@ -1,10 +1,8 @@
 // frontend/src/pages/client/ClientDashboard.tsx
-// UPDATES:
-//   1. NotificationBell — live data from GET /notifications, unread badge,
-//      mark-all-read, per-notification mark-read, deep-link icon routing.
-//   2. Profile dropdown → "My Profile" now navigates to /client/profile.
-//   3. Avatar uses profile.avatar_url if available.
-//   4. Polling every 30 s for new notifications in the background.
+// Notification bell — no separate page needed.
+// All notifications shown in the dropdown (chat_message excluded — chat widget handles those).
+// Clicking a sample notification → /client/samples
+// Clicking an order notification  → /client/orders
 
 import {
   Link,
@@ -50,7 +48,7 @@ interface AppNotification {
   id: number;
   title: string;
   message: string;
-  type: string;            // 'sample_new' | 'sample_status' | 'order_new' | 'order_status' | 'chat_message' | 'report_ready' | 'info' | 'warning'
+  type: string;
   is_read: boolean;
   created_at: string;
   sample_request_id?: number | null;
@@ -85,7 +83,6 @@ function useBreakpoint() {
     return () => window.removeEventListener('resize', fn);
   }, []);
   return {
-    width,
     isMobile:    width < BP.mobile,
     isTablet:    width >= BP.mobile && width < BP.desktop,
     isDesktop:   width >= BP.desktop,
@@ -94,7 +91,7 @@ function useBreakpoint() {
 }
 
 /* ── Time ago helper ─────────────────────────────────────── */
-function timeAgo(iso: string) {
+export function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60000);
   if (m < 1)  return 'just now';
@@ -104,69 +101,91 @@ function timeAgo(iso: string) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/* ── Route destination for a notification ── */
+function notifRoute(n: AppNotification): string | null {
+  if (n.sample_request_id) return '/client/samples';
+  if (n.order_id)          return '/client/orders';
+  // Fallback by type
+  if (['sample_new', 'sample_status', 'report_ready'].includes(n.type)) return '/client/samples';
+  if (['order_new',  'order_status'].includes(n.type))                   return '/client/orders';
+  return null;
+}
+
 /* ══════════════════════════════════════════════════════════
-   NotificationBell — live, DB-backed
+   NotificationBell
+   - Shows all notifications EXCEPT chat_message (chat widget handles those)
+   - Clicking a card routes to the correct page
+   - No separate /client/notifications page required
 ══════════════════════════════════════════════════════════ */
-function NotificationBell({ customerId, userId }: { customerId?: string; userId?: number }) {
+function NotificationBell({
+  customerId,
+}: {
+  customerId?: string;
+}) {
   const navigate = useNavigate();
   const [open,  setOpen]  = useState(false);
   const [items, setItems] = useState<AppNotification[]>([]);
-  const ref = useRef<HTMLDivElement>(null);
+  const ref     = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const unreadCount = items.filter(n => !n.is_read).length;
+  // Exclude chat_message — those live in the chat widget
+  const visibleItems = items.filter(n => n.type !== 'chat_message');
+  const unreadCount  = visibleItems.filter(n => !n.is_read).length;
 
-  /* ── Fetch from DB ── */
+  /* ── Fetch ── */
   const fetchNotifs = useCallback(async () => {
-    if (!customerId) return;
+    if (!customerId) {
+      console.warn('[NotificationBell] no customerId — skipping fetch');
+      return;
+    }
     try {
-      const res = await axios.get(`/client-notifications?customer_id=${customerId}&limit=20`);
-      const data: AppNotification[] = Array.isArray(res.data) ? res.data : [];
-      setItems(data);
-    } catch { /* silent */ }
+      const res = await axios.get(`/client-notifications?customer_id=${customerId}&limit=30`);
+      setItems(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('[NotificationBell] fetch failed:', err);
+    }
   }, [customerId]);
 
   useEffect(() => {
     fetchNotifs();
-    pollRef.current = setInterval(fetchNotifs, 30000); // poll every 30 s
+    pollRef.current = setInterval(fetchNotifs, 30000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchNotifs]);
 
   /* ── Close on outside click ── */
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const h = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
   }, []);
 
   /* ── Mark single read ── */
   const markRead = async (id: number) => {
     setItems(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
-    try { await axios.patch(`/client-notifications/${id}/read`); } catch { /* silent */ }
+    try { await axios.patch(`/client-notifications/${id}/read`); }
+    catch (err) { console.error('[NotificationBell] markRead failed:', err); }
   };
 
   /* ── Mark all read ── */
   const markAllRead = async () => {
     setItems(prev => prev.map(n => ({ ...n, is_read: true })));
-    try { await axios.patch(`/client-notifications/read-all?customer_id=${customerId}`); } catch { /* silent */ }
+    try { await axios.patch(`/client-notifications/read-all?customer_id=${customerId}`); }
+    catch (err) { console.error('[NotificationBell] markAllRead failed:', err); }
   };
 
-  /* ── Click a notification → navigate ── */
+  /* ── Click notification → mark read + navigate ── */
   const handleClick = (n: AppNotification) => {
     markRead(n.id);
-    if (n.sample_request_id) { navigate('/client/samples'); setOpen(false); return; }
-    if (n.order_id)          { navigate('/client/orders');  setOpen(false); return; }
+    setOpen(false);
+    const dest = notifRoute(n);
+    if (dest) navigate(dest);
   };
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button
-        style={S.iconBtn}
-        onClick={() => setOpen(o => !o)}
-        aria-label="Notifications"
-      >
+      <button style={S.iconBtn} onClick={() => setOpen(o => !o)} aria-label="Notifications">
         <Bell size={16} />
         {unreadCount > 0 && (
           <span style={S.bellBadge}>{unreadCount > 99 ? '99+' : unreadCount}</span>
@@ -179,28 +198,26 @@ function NotificationBell({ customerId, userId }: { customerId?: string; userId?
           <div style={S.bellHeader}>
             <span style={S.bellTitle}>
               Notifications
-              {unreadCount > 0 && (
-                <span style={S.bellCountPill}>{unreadCount} new</span>
-              )}
+              {unreadCount > 0 && <span style={S.bellCountPill}>{unreadCount} new</span>}
             </span>
             {unreadCount > 0 && (
-              <button style={S.bellMarkAll} onClick={markAllRead}>
-                Mark all read
-              </button>
+              <button style={S.bellMarkAll} onClick={markAllRead}>Mark all read</button>
             )}
           </div>
           <div style={S.dropDivider} />
 
           {/* List */}
-          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
-            {items.length === 0 ? (
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {visibleItems.length === 0 ? (
               <div style={S.bellEmpty}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>🔔</div>
                 <div style={{ fontWeight: 600, color: '#374151', marginBottom: 4 }}>All caught up!</div>
                 <div style={{ fontSize: 12, color: '#94a3b8' }}>No notifications yet</div>
               </div>
-            ) : items.map(n => {
-              const meta = getNotifMeta(n.type);
+            ) : visibleItems.map(n => {
+              const meta      = getNotifMeta(n.type);
+              const dest      = notifRoute(n);
+              const clickable = !!dest;
               return (
                 <div
                   key={n.id}
@@ -208,16 +225,20 @@ function NotificationBell({ customerId, userId }: { customerId?: string; userId?
                     ...S.bellItem,
                     background: n.is_read ? '#fff' : '#f8faff',
                     borderLeft: n.is_read ? '3px solid transparent' : `3px solid ${meta.dot}`,
-                    cursor: (n.sample_request_id || n.order_id) ? 'pointer' : 'default',
+                    cursor:     clickable ? 'pointer' : 'default',
                   }}
-                  onClick={() => handleClick(n)}
+                  onClick={() => clickable && handleClick(n)}
                 >
+                  {/* Type icon */}
                   <div style={{ ...S.bellTypeIcon, background: meta.bg }}>
                     <span style={{ fontSize: 14 }}>{meta.icon}</span>
                   </div>
+
+                  {/* Body */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
-                      fontSize: 12.5, fontWeight: n.is_read ? 500 : 700,
+                      fontSize: 12.5,
+                      fontWeight: n.is_read ? 500 : 700,
                       color: n.is_read ? '#64748b' : '#0f172a',
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>
@@ -226,10 +247,23 @@ function NotificationBell({ customerId, userId }: { customerId?: string; userId?
                     <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, lineHeight: 1.4 }}>
                       {n.message}
                     </div>
-                    <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 4 }}>
-                      {timeAgo(n.created_at)}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                      <span style={{ fontSize: 10.5, color: '#94a3b8' }}>{timeAgo(n.created_at)}</span>
+                      {clickable && (
+                        <span style={{
+                          fontSize: 10.5, fontWeight: 600,
+                          color: meta.color,
+                          background: meta.bg,
+                          borderRadius: 4,
+                          padding: '1px 6px',
+                        }}>
+                          {dest === '/client/samples' ? '→ Sample Requests' : '→ My Orders'}
+                        </span>
+                      )}
                     </div>
                   </div>
+
+                  {/* Mark read */}
                   {!n.is_read && (
                     <button
                       style={S.bellReadBtn}
@@ -243,21 +277,6 @@ function NotificationBell({ customerId, userId }: { customerId?: string; userId?
               );
             })}
           </div>
-
-          {/* Footer */}
-          {items.length > 0 && (
-            <>
-              <div style={S.dropDivider} />
-              <div style={{ padding: '8px 12px', textAlign: 'center' }}>
-                <button
-                  style={S.bellViewAll}
-                  onClick={() => { setOpen(false); navigate('/client/notifications'); }}
-                >
-                  View all notifications →
-                </button>
-              </div>
-            </>
-          )}
         </div>
       )}
     </div>
@@ -278,23 +297,42 @@ export default function ClientDashboard() {
   const [avatarUrl,   setAvatarUrl]   = useState('');
   const profileRef = useRef<HTMLDivElement>(null);
 
-  // Read local user for IDs
-  const localUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
-  const customerId = localUser?.customer_id;
-  const userId     = user?.id || localUser?.id;
+  const localUser = (() => {
+    try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; }
+  })();
+  const customerId: string | undefined = localUser?.customer_id;
+  const userId: number | undefined     = user?.id ?? localUser?.id ?? undefined;
 
-  // Load avatar from profile (non-critical)
+  const [resolvedCustomerId, setResolvedCustomerId] = useState<string | undefined>(customerId);
+
+  /* ── Avatar + resolvedCustomerId from /client-profile ── */
   useEffect(() => {
-    if (!userId) return;
-    axios.get(`/client-profile?user_id=${userId}`)
-      .then(res => { if (res.data?.avatar_url) setAvatarUrl(res.data.avatar_url); })
-      .catch(() => {});
-  }, [userId]);
+    const fetchProfile = async () => {
+      if (userId) {
+        try {
+          const res = await axios.get(`/client-profile?user_id=${userId}`);
+          if (res.data?.avatar_url)  setAvatarUrl(res.data.avatar_url);
+          if (res.data?.customer_id) setResolvedCustomerId(res.data.customer_id);
+          if (res.data?.avatar_url || res.data?.customer_id) return;
+        } catch (err) {
+          console.error('[ClientDashboard] profile fetch by user_id failed:', err);
+        }
+      }
+      if (customerId) {
+        try {
+          const res = await axios.get(`/client-profile?customer_id=${encodeURIComponent(customerId)}`);
+          if (res.data?.avatar_url)  setAvatarUrl(res.data.avatar_url);
+          if (res.data?.customer_id) setResolvedCustomerId(res.data.customer_id);
+        } catch (err) {
+          console.error('[ClientDashboard] profile fetch by customer_id failed:', err);
+        }
+      }
+    };
+    fetchProfile();
+  }, [userId, customerId]);
 
-  // Close sidebar on route change
   useEffect(() => { if (isCollapsed) setMobileOpen(false); }, [location.pathname, isCollapsed]);
 
-  // Close profile dropdown on outside click
   useEffect(() => {
     const fn = (e: MouseEvent) => {
       if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
@@ -303,7 +341,6 @@ export default function ClientDashboard() {
     return () => document.removeEventListener('mousedown', fn);
   }, []);
 
-  // Prevent body scroll when mobile sidebar open
   useEffect(() => {
     document.body.style.overflow = isCollapsed && mobileOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
@@ -312,7 +349,9 @@ export default function ClientDashboard() {
   const getInitials = (name?: string) => {
     if (!name) return '?';
     const parts = name.trim().split(' ');
-    return parts.length === 1 ? parts[0][0].toUpperCase() : (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return parts.length === 1
+      ? parts[0][0].toUpperCase()
+      : (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
   /* ── Sidebar ─────────────────────────────────────────── */
@@ -325,8 +364,11 @@ export default function ClientDashboard() {
     <aside style={sidebarStyle}>
       <div style={S.brand}>
         <div style={S.brandLogo}>
-          <img src="/logo.png" alt="" style={{ width: 20, height: 20, borderRadius: 5 }}
-            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          <img
+            src="/logo.png" alt=""
+            style={{ width: 20, height: 20, borderRadius: 5 }}
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
         </div>
         <div style={{ flex: 1 }}>
           <div style={S.brandName}>Synkore Tech</div>
@@ -359,12 +401,20 @@ export default function ClientDashboard() {
           {navItems.map(item => {
             const active = location.pathname === item.path;
             return (
-              <Link key={item.path} to={item.path}
+              <Link
+                key={item.path}
+                to={item.path}
                 onClick={() => isCollapsed && setMobileOpen(false)}
-                style={{ ...S.navItem, background: active ? 'rgba(79,70,229,0.20)' : 'transparent', borderLeft: active ? '3px solid #6366f1' : '3px solid transparent' }}
+                style={{
+                  ...S.navItem,
+                  background: active ? 'rgba(79,70,229,0.20)' : 'transparent',
+                  borderLeft: active ? '3px solid #6366f1'    : '3px solid transparent',
+                }}
               >
                 <span style={{ ...S.navIcon, color: active ? '#6366f1' : 'white' }}>{item.icon}</span>
-                <span style={{ ...S.navLabel, color: active ? '#f1f5f9' : '#94a3b8', fontWeight: active ? 600 : 400 }}>{item.label}</span>
+                <span style={{ ...S.navLabel, color: active ? '#f1f5f9' : '#94a3b8', fontWeight: active ? 600 : 400 }}>
+                  {item.label}
+                </span>
                 {active && <div style={{ ...S.activeDot, background: '#6366f1' }} />}
               </Link>
             );
@@ -402,7 +452,6 @@ export default function ClientDashboard() {
         ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
         a { text-decoration: none; }
         button { cursor: pointer; }
-        .bell-item-hover:hover { background: #f8faff !important; }
         @media (max-width: 575px) {
           .admin-content { padding: 12px !important; }
           .admin-header  { padding: 0 12px !important; height: 54px !important; }
@@ -415,14 +464,17 @@ export default function ClientDashboard() {
         @media (max-width: 480px) { .profile-info-block { display: none !important; } }
         @media (max-width: 575px) { .page-title { font-size: 15px !important; } .breadcrumb-row { display: none !important; } }
         @media (min-width: 576px) and (max-width: 767px) { .page-title { font-size: 16px !important; } }
+        .bell-notif-item:hover { background: #f0f4ff !important; }
       `}</style>
 
-      {isCollapsed && mobileOpen && <div style={S.overlay} onClick={() => setMobileOpen(false)} />}
+      {isCollapsed && mobileOpen && (
+        <div style={S.overlay} onClick={() => setMobileOpen(false)} />
+      )}
 
       {sidebar}
 
       <div style={{ ...S.main, marginLeft: isCollapsed ? 0 : undefined }}>
-        {/* Header */}
+        {/* ── Header ── */}
         <header
           className="admin-header"
           style={{ ...S.header, height: headerHeight, padding: isMobile ? '0 12px' : isTablet ? '0 16px' : '0 24px' }}
@@ -437,35 +489,36 @@ export default function ClientDashboard() {
           </div>
 
           <div style={S.headerRight}>
-            {/* ── Live notification bell ── */}
-            <NotificationBell customerId={customerId} userId={userId} />
+            {/* Bell — no pathname needed, no separate page */}
+            <NotificationBell customerId={resolvedCustomerId} />
 
             <div style={S.headerDivider} />
 
             {/* ── Profile dropdown ── */}
             <div ref={profileRef} style={{ position: 'relative' }}>
               <button style={S.profileBtn} onClick={() => setProfileOpen(o => !o)}>
-                {avatarUrl ? (
-                  <img src={avatarUrl} alt="avatar" style={{ ...S.avatar, objectFit: 'cover' }} />
-                ) : (
-                  <div style={S.avatar}>{getInitials(user?.name)}</div>
-                )}
+                {avatarUrl
+                  ? <img src={avatarUrl} alt="avatar" style={{ ...S.avatar, objectFit: 'cover' }} />
+                  : <div style={S.avatar}>{getInitials(user?.name)}</div>
+                }
                 <div className="profile-info-block" style={S.profileInfo}>
                   <span style={S.profileName}>{user?.name}</span>
                   <span style={S.profileRole}>Client</span>
                 </div>
-                <ChevronRight size={14} style={{ color: '#94a3b8', transform: profileOpen ? 'rotate(90deg)' : 'rotate(270deg)', transition: 'transform 0.2s' }} />
+                <ChevronRight
+                  size={14}
+                  style={{ color: '#94a3b8', transform: profileOpen ? 'rotate(90deg)' : 'rotate(270deg)', transition: 'transform 0.2s' }}
+                />
               </button>
 
               {profileOpen && (
                 <div style={{ ...S.dropdown, right: isMobile ? '-8px' : 0, minWidth: isMobile ? 200 : 240 }}>
                   <div style={S.dropArrow} />
                   <div style={S.dropHead}>
-                    {avatarUrl ? (
-                      <img src={avatarUrl} alt="avatar" style={{ ...S.dropAvatar, objectFit: 'cover' }} />
-                    ) : (
-                      <div style={S.dropAvatar}>{getInitials(user?.name)}</div>
-                    )}
+                    {avatarUrl
+                      ? <img src={avatarUrl} alt="avatar" style={{ ...S.dropAvatar, objectFit: 'cover' }} />
+                      : <div style={S.dropAvatar}>{getInitials(user?.name)}</div>
+                    }
                     <div>
                       <div style={S.dropName}>{user?.name}</div>
                       <div style={S.dropEmail}>{user?.email}</div>
@@ -475,11 +528,10 @@ export default function ClientDashboard() {
                   <div style={S.dropStatus}>
                     <div style={S.statusDot} />
                     <span style={S.statusText}>Active</span>
-                    {customerId && <span style={S.custIdPill}>{customerId}</span>}
+                    {resolvedCustomerId && <span style={S.custIdPill}>{resolvedCustomerId}</span>}
                   </div>
                   <div style={S.dropDivider} />
 
-                  {/* ── My Profile — navigates to /client/profile ── */}
                   <button
                     style={S.dropItem}
                     onClick={() => { setProfileOpen(false); navigate('/client/profile'); }}
@@ -502,8 +554,11 @@ export default function ClientDashboard() {
           </div>
         </header>
 
-        {/* Content */}
-        <main className="admin-content" style={{ ...S.content, padding: isMobile ? 12 : isTablet ? 16 : 24 }}>
+        {/* ── Content ── */}
+        <main
+          className="admin-content"
+          style={{ ...S.content, padding: isMobile ? 12 : isTablet ? 16 : 24 }}
+        >
           <Outlet />
         </main>
       </div>
@@ -517,8 +572,8 @@ function DynamicBreadcrumb({ pathname, isMobile }: { pathname: string; isMobile:
   const formatLabel = (seg: string) =>
     seg.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
   const crumbs = segments.map((seg, idx) => ({
-    label: formatLabel(seg),
-    path: '/' + segments.slice(0, idx + 1).join('/'),
+    label:  formatLabel(seg),
+    path:   '/' + segments.slice(0, idx + 1).join('/'),
     isLast: idx === segments.length - 1,
   }));
   const pageTitle = crumbs.length > 0 ? crumbs[crumbs.length - 1].label : 'Dashboard';
@@ -527,13 +582,16 @@ function DynamicBreadcrumb({ pathname, isMobile }: { pathname: string; isMobile:
     <div>
       {!isMobile && (
         <div className="breadcrumb-row" style={S.breadcrumb}>
-          <Link to="/client/dashboard" style={S.breadcrumbHome} title="Home"><Home size={12} /></Link>
+          <Link to="/client/dashboard" style={S.breadcrumbHome} title="Home">
+            <Home size={12} />
+          </Link>
           {crumbs.map(crumb => (
             <span key={crumb.path} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <span style={S.breadcrumbSep}>/</span>
               {crumb.isLast
                 ? <span style={S.breadcrumbCurrent}>{crumb.label}</span>
-                : <Link to={crumb.path} style={S.breadcrumbLink}>{crumb.label}</Link>}
+                : <Link to={crumb.path} style={S.breadcrumbLink}>{crumb.label}</Link>
+              }
             </span>
           ))}
         </div>
@@ -554,36 +612,38 @@ const S: Record<string, CSSProperties> = {
   sidebarClosed: { position: 'fixed', left: -280, top: 0, height: '100vh' },
   sidebarOpen:   { position: 'fixed', left: 0,    top: 0, height: '100vh', boxShadow: '4px 0 32px rgba(0,0,0,0.45)' },
 
-  brand:          { display: 'flex', alignItems: 'center', gap: 10, padding: '18px 16px 14px', borderBottom: '1px solid rgba(255,255,255,0.05)', flexShrink: 0 },
-  brandLogo:      { width: 34, height: 34, background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 4px 12px rgba(79,70,229,0.4)' },
-  brandName:      { fontSize: 18, fontWeight: 700, color: '#f1f5f9', lineHeight: 1.2, letterSpacing: '-0.01em' },
-  sidebarCloseBtn:{ background: 'transparent', border: 'none', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', borderRadius: 6, flexShrink: 0 },
-  scrollableArea: { flex: 1, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', display: 'flex', flexDirection: 'column', padding: '12px 0 0' } as CSSProperties,
-  sectionLabel:   { fontSize: 9.5, fontWeight: 700, color: '#334155', letterSpacing: '0.1em', padding: '0 18px 6px', textTransform: 'uppercase', flexShrink: 0 },
-  dashLink:       { display: 'flex', alignItems: 'center', gap: 10, margin: '0 10px 12px', padding: '9px 10px', borderRadius: 9, color: '#64748b', fontSize: 14, fontWeight: 500, transition: 'all 0.15s', position: 'relative', flexShrink: 0, minHeight: 44 },
-  dashLinkActive: { color: '#f1f5f9', background: 'rgba(79,70,229,0.15)' },
-  dashIcon:       { width: 28, height: 28, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0, transition: 'background 0.15s' },
-  activeBar:      { position: 'absolute', right: 10, width: 6, height: 6, borderRadius: '50%', background: '#4f46e5' },
-  nav:            { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 10px 8px' },
-  navItem:        { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 5px', borderRadius: 7, fontSize: 13, color: '#94a3b8', marginBottom: 2, transition: 'all 0.15s', position: 'relative', marginTop: 4, minHeight: 40 },
-  navIcon:        { flexShrink: 0, transition: 'color 0.15s' },
-  navLabel:       { flex: 1, transition: 'color 0.15s', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  activeDot:      { width: 5, height: 5, borderRadius: '50%', flexShrink: 0 },
-  sidebarBottom:  { marginTop: 'auto', paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)', flexShrink: 0, paddingBottom: 12 },
-  bottomLink:     { display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '10px 18px', border: 'none', background: 'transparent', cursor: 'pointer', transition: 'background 0.12s', minHeight: 40 },
-  bottomLinkText: { fontSize: 12, color: 'white', fontWeight: 500 },
+  brand:           { display: 'flex', alignItems: 'center', gap: 10, padding: '18px 16px 14px', borderBottom: '1px solid rgba(255,255,255,0.05)', flexShrink: 0 },
+  brandLogo:       { width: 34, height: 34, background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 4px 12px rgba(79,70,229,0.4)' },
+  brandName:       { fontSize: 18, fontWeight: 700, color: '#f1f5f9', lineHeight: 1.2, letterSpacing: '-0.01em' },
+  sidebarCloseBtn: { background: 'transparent', border: 'none', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', borderRadius: 6, flexShrink: 0 },
+  scrollableArea:  { flex: 1, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' as CSSProperties['WebkitOverflowScrolling'], display: 'flex', flexDirection: 'column', padding: '12px 0 0' },
+  sectionLabel:    { fontSize: 9.5, fontWeight: 700, color: '#334155', letterSpacing: '0.1em', padding: '0 18px 6px', textTransform: 'uppercase', flexShrink: 0 },
+  dashLink:        { display: 'flex', alignItems: 'center', gap: 10, margin: '0 10px 12px', padding: '9px 10px', borderRadius: 9, color: '#64748b', fontSize: 14, fontWeight: 500, transition: 'all 0.15s', position: 'relative', flexShrink: 0, minHeight: 44 },
+  dashLinkActive:  { color: '#f1f5f9', background: 'rgba(79,70,229,0.15)' },
+  dashIcon:        { width: 28, height: 28, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0, transition: 'background 0.15s' },
+  activeBar:       { position: 'absolute', right: 10, width: 6, height: 6, borderRadius: '50%', background: '#4f46e5' },
+  nav:             { display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 10px 8px' },
+  navItem:         { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 5px', borderRadius: 7, fontSize: 13, color: '#94a3b8', marginBottom: 2, transition: 'all 0.15s', position: 'relative', marginTop: 4, minHeight: 40 },
+  navIcon:         { flexShrink: 0, transition: 'color 0.15s' },
+  navLabel:        { flex: 1, transition: 'color 0.15s', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  activeDot:       { width: 5, height: 5, borderRadius: '50%', flexShrink: 0 },
+  sidebarBottom:   { marginTop: 'auto', paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)', flexShrink: 0, paddingBottom: 12 },
+  bottomLink:      { display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '10px 18px', border: 'none', background: 'transparent', cursor: 'pointer', transition: 'background 0.12s', minHeight: 40 },
+  bottomLinkText:  { fontSize: 12, color: 'white', fontWeight: 500 },
 
-  main:    { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden', width: '100%' },
-  header:  { background: '#ffffff', padding: '0 24px', height: 62, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', flexShrink: 0 },
-  headerLeft:  { display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 },
-  menuBtn:     { width: 36, height: 36, borderRadius: 9, border: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', flexShrink: 0, touchAction: 'manipulation' },
+  main:       { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden', width: '100%' },
+  header:     { background: '#ffffff', padding: '0 24px', height: 62, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 1px 3px rgba(0,0,0,0.04)', flexShrink: 0 },
+  headerLeft: { display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 },
+  menuBtn:    { width: 36, height: 36, borderRadius: 9, border: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', flexShrink: 0, touchAction: 'manipulation' },
+
   breadcrumb:        { display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2, flexWrap: 'wrap' },
   breadcrumbHome:    { display: 'flex', alignItems: 'center', color: '#94a3b8', textDecoration: 'none' },
   breadcrumbLink:    { fontSize: 11, color: '#64748b', fontWeight: 500, textDecoration: 'none' },
   breadcrumbSep:     { color: '#cbd5e1', fontSize: 12 },
   breadcrumbCurrent: { fontSize: 11, color: '#64748b', fontWeight: 500 },
-  pageTitle:   { fontSize: 17, fontWeight: 700, color: '#0f172a', letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  headerRight: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
+  pageTitle:         { fontSize: 17, fontWeight: 700, color: '#0f172a', letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+
+  headerRight:   { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
   iconBtn:       { width: 36, height: 36, borderRadius: 9, border: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', cursor: 'pointer', touchAction: 'manipulation', position: 'relative' },
   headerDivider: { width: 1, height: 28, background: '#e2e8f0', margin: '0 2px' },
   profileBtn:    { display: 'flex', alignItems: 'center', gap: 8, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '5px 8px 5px 5px', cursor: 'pointer', touchAction: 'manipulation' },
@@ -605,18 +665,17 @@ const S: Record<string, CSSProperties> = {
   dropDivider:{ height: 1, background: '#f1f5f9' },
   dropItem:   { display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '10px 16px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12.5, color: '#374151', textAlign: 'left', fontWeight: 500, transition: 'background 0.12s', fontFamily: 'DM Sans,sans-serif', minHeight: 40 },
   dropLogout: { color: '#ef4444', fontWeight: 600 },
-  content:    { flex: 1, padding: 24, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' },
+  content:    { flex: 1, padding: 24, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' as CSSProperties['WebkitOverflowScrolling'] },
 
-  /* Notification Bell dropdown */
+  /* Bell */
   bellBadge:    { position: 'absolute', top: 4, right: 4, minWidth: 15, height: 15, borderRadius: 99, background: '#ef4444', color: '#fff', fontSize: 9, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, padding: '0 3px' },
-  bellDropdown: { position: 'absolute', top: 'calc(100% + 10px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, boxShadow: '0 20px 60px rgba(0,0,0,0.14)', width: 360, zIndex: 500, overflow: 'hidden' },
+  bellDropdown: { position: 'absolute', top: 'calc(100% + 10px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, boxShadow: '0 20px 60px rgba(0,0,0,0.14)', width: 370, zIndex: 500, overflow: 'hidden' },
   bellHeader:   { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '13px 16px', background: 'linear-gradient(135deg,#f8fafc,#f1f5f9)' },
   bellTitle:    { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: '#0f172a' },
   bellCountPill:{ background: '#ef4444', color: '#fff', borderRadius: 20, padding: '1px 7px', fontSize: 10, fontWeight: 700 },
   bellMarkAll:  { fontSize: 11, color: '#4f46e5', cursor: 'pointer', fontWeight: 600, border: 'none', background: 'none', fontFamily: 'inherit' },
-  bellEmpty:    { padding: '32px 16px', textAlign: 'center', color: '#94a3b8', fontSize: 13 },
-  bellItem:     { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '11px 14px', borderBottom: '1px solid #f3f4f6', transition: 'background .12s' },
-  bellTypeIcon: { width: 32, height: 32, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  bellEmpty:    { padding: '40px 16px', textAlign: 'center', color: '#94a3b8', fontSize: 13 },
+  bellItem:     { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', borderBottom: '1px solid #f3f4f6', transition: 'background .12s' },
+  bellTypeIcon: { width: 34, height: 34, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   bellReadBtn:  { flexShrink: 0, width: 22, height: 22, borderRadius: '50%', border: '1.5px solid #e2e8f0', background: '#fff', cursor: 'pointer', fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 },
-  bellViewAll:  { fontSize: 12, color: '#6366f1', fontWeight: 600, border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit' },
 };

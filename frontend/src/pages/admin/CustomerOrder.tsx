@@ -21,7 +21,7 @@
 //   • Added CUSTOMER CODE column to the main table — shows the customer_id
 //     value (e.g. CUS-2026-001) in a monospace badge.
 //
-// CHANGES v3 (this pass):
+// CHANGES v3:
 //   • Certification Type is now backed by a real master table instead of
 //     free text — same select-dropdown pattern already used for Agent and
 //     Packing Type (master-count badge in the label, fallback manual input
@@ -33,6 +33,65 @@
 //     defensive multi-endpoint pattern as fetchHsnCodes/fetchFabrics)
 //     since the exact route for this master wasn't confirmed yet — once
 //     you tell me the real one, this can be trimmed to a single call.
+//
+// CHANGES v4:
+//   • "Select Customer" is now a click-to-search dropdown (CustomerDropdown)
+//     instead of a separate free-text search box + native <select> — same
+//     trigger/panel/search-list pattern already used by HsnDropdown and
+//     FabricDropdown. Selecting a customer still auto-fills the same
+//     customer/delivery address fields as before.
+//
+// CHANGES v6:
+//   • Transport is now backed by a master table using a NATIVE <select> —
+//     same exact pattern as Agent Name / Packing Type (label + loaded-count
+//     badge + <select> + green auto-fill confirmation line below), instead
+//     of the earlier custom search-dropdown component. Falls back to a
+//     manual text input if the master is empty/unavailable, exactly like
+//     Agent/Packing Type/Certification. The old TransportDropdown
+//     search-panel component and its CSS have been removed since they're
+//     no longer used.
+//
+// CHANGES v7:
+//   • Selecting a customer now AUTO-FILLS the Agent Name field.
+//     The Customer interface gains optional agent_id / agent_name fields
+//     (returned by /api/customers in most ERP schemas). On selection,
+//     handleCustomerSelect matches the customer's agent against the loaded
+//     agents master (by agent_id FK first, then agent_name string fallback)
+//     and fills both agent_id and agent_name. Clearing the customer also
+//     clears the agent. A subtle "Auto-filled from customer" badge appears
+//     under the Agent dropdown when the value was set this way.
+//
+// CHANGES v8:
+//   • Added a "Firm" dropdown in the Delivery Details section with two
+//     options — AEF and AE. Choosing one reveals a text input bound to the
+//     matching DB column (`aef` varchar(100) or `ae` varchar(150) — both
+//     already exist on order_bookings and are already handled by the
+//     backend's buildPayload()). Switching the dropdown clears the other
+//     column so only one of aef/ae is ever populated per order.
+//
+// CHANGES v9:
+//   • "Firm" is now a single dropdown (AEF / AE) whose selected value
+//     itself is stored straight into one `firm` DB column.
+//
+// CHANGES v10:
+//   • Added a "Firm" column to the main Customer Orders table (between
+//     Transport and Exp. Delivery) showing each order's `firm` value
+//     (AEF / AE) so it's visible at a glance without opening the row.
+//     Also added "Firm" to the Export CSV/Excel/Print columns (it was
+//     already included there in v9, left untouched) — table now mirrors
+//     the export output. colSpan on the loading/error/empty table rows
+//     bumped from 12 → 13 to match the new column count.
+//
+// CHANGES v11 (this pass):
+//   • Added a "Quality" column to the main Customer Orders table (between
+//     Firm and Exp. Delivery) showing each order's `quality` value (the
+//     fabric quality / full construction description captured in the
+//     Order Details modal) in a truncated, title-tooltipped cell so long
+//     descriptions don't blow out the row height.
+//   • Added "Quality" to the Export CSV/Excel/Print columns so the export
+//     output mirrors the table.
+//   • colSpan on the loading/error/empty table rows bumped from 13 → 14
+//     to match the new column count.
 //
 // Export / Print menu in the page header (Export as CSV, Export as Excel,
 // Print Table) — same dropdown pattern as ProductionPlanningMaster.
@@ -100,13 +159,18 @@ interface Customer {
   shipping_address?: string; shipping_pin_code?: string; shipping_district?: string;
   shipping_state?: string; shipping_country?: string; shipping_gst_no?: string;
   shipping_contact_name?: string;
+  // v7: agent fields for auto-fill when a customer is selected
+  agent_id?: number | string;
+  agent_name?: string;
+  default_agent_id?: number | string;
+  default_agent_name?: string;
+  preferred_agent_id?: number | string;
+  preferred_agent?: string;
 }
 interface Agent { id: number; agent_name: string; agent_code?: string; }
 interface PackageType { id: number; package_name: string; package_code?: string; }
-// NEW: Certification master — backs the Certification Type dropdown below.
-// `certification_code` is whatever the master stores as the reusable
-// certificate number for that certification (auto-fills Certificate No).
 interface CertificationMaster { id: number; certification_type: string; certification_code?: string; }
+interface TransportMaster { id: number; transport_name: string; transport_code?: string; }
 interface HsnCode { id: number; hsn_code: string; description?: string; }
 interface FabricMaster {
   id: number; sort_no: string; fabric_code?: string; quality?: string;
@@ -115,9 +179,11 @@ interface FabricMaster {
   warp?: string; weft?: string; reed?: string; pick?: string;
   width?: string; weave?: string; design?: string;
 }
+// v8: which "Firm" column is currently active for an order
+type FirmType = '' | 'AEF' | 'AE';
+
 interface CustomerOrder {
   id?: number;
-  // ── NEW: sample_request_id is persisted in DB and returned by API ──
   sample_request_id?: number | null;
   order_code: string; order_date: string; po_no: string; po_date: string;
   customer_id?: number | string; customer_name: string; customer_address: string;
@@ -129,16 +195,17 @@ interface CustomerOrder {
   commission: string; packing_type_id?: number | string; packing_type: string;
   confirm_mode: string; confirm_by: string; confirm_code: string; expect_delivery: string;
   pinning: string; rate_type: string; payment_terms: string; freight: string;
-  // NEW: certification_id links back to the Certification master row that
-  // was selected; certification_type/certificate_no remain the persisted
-  // display text & code, so existing orders with free-typed values still
-  // render fine even without a matching master row.
-  transport: string; certification_id?: number | string; certification_type: string; certificate_no: string; remarks: string;
+  transport_id?: number | string; transport: string; certification_id?: number | string; certification_type: string; certificate_no: string; remarks: string;
   order_type?: string; quality_type?: string; hsn_code?: string; sort_no?: string;
   quality?: string; delivery_instruction?: string;
   cgst_pct?: number; sgst_pct?: number; igst_pct?: number;
   basic_value?: number; cgst_value?: number; sgst_value?: number; igst_value?: number; net_value?: number;
   items?: OrderItem[] | string | null; _conversionId?: number;
+  // v7: track whether the agent was auto-filled from customer selection
+  _agentAutoFilled?: boolean;
+  // v9: "Firm" dropdown — the selected option (AEF or AE) itself is the
+  // value stored to the DB in a single `firm` column.
+  firm?: FirmType;
 }
 interface OrderItem {
   id?: number; order_id?: number; construction_po: string; meter: number; rate: number;
@@ -220,7 +287,7 @@ const normaliseOrder = (r: CustomerOrder): CustomerOrder => ({
   freight: str(r.freight), transport: str(r.transport), certification_type: str(r.certification_type),
   certificate_no: str(r.certificate_no), remarks: str(r.remarks),
   customer_id: r.customer_id ?? '', agent_id: r.agent_id ?? '', packing_type_id: r.packing_type_id ?? '',
-  certification_id: r.certification_id ?? '',
+  certification_id: r.certification_id ?? '', transport_id: r.transport_id ?? '',
   order_date: toDateStr(r.order_date), po_date: toDateStr(r.po_date), expect_delivery: toDateStr(r.expect_delivery),
   order_type: r.order_type || 'Domestic', quality_type: r.quality_type || 'Regular',
   hsn_code: str(r.hsn_code), sort_no: str(r.sort_no), quality: str(r.quality),
@@ -230,6 +297,8 @@ const normaliseOrder = (r: CustomerOrder): CustomerOrder => ({
   sgst_value: Number(r.sgst_value)||0, igst_value: Number(r.igst_value)||0, net_value: Number(r.net_value)||0,
   sample_request_id: r.sample_request_id ?? null,
   items: r.items,
+  // v9: hydrate the Firm dropdown straight from the `firm` column
+  firm: (r.firm === 'AEF' || r.firm === 'AE') ? r.firm : '',
 });
 
 const buildOrderPayload = (
@@ -259,6 +328,9 @@ const buildOrderPayload = (
     quality: ob.quality||null, delivery_instruction: ob.delivery_instruction||null,
     cgst_pct: Number(ob.cgst_pct)||0, sgst_pct: Number(ob.sgst_pct)||0, igst_pct: Number(ob.igst_pct)||0,
     basic_value: basic, cgst_value: cgst, sgst_value: sgst, igst_value: igst, net_value: net,
+    // v9: Firm — the dropdown selection itself ('AEF' or 'AE') is the
+    // value sent for the single `firm` column.
+    firm: f.firm || null,
     items: ob.items.map(i => ({
       construction_po: i.construction_po, meter: Number(i.meter)||0, rate: Number(i.rate)||0,
       disc_type: i.disc_type, disc_pct: Number(i.disc_pct)||0,
@@ -270,6 +342,7 @@ const buildOrderPayload = (
     if (f.agent_id)          base.agent_id          = f.agent_id;
     if (f.packing_type_id)   base.packing_type_id   = f.packing_type_id;
     if (f.certification_id)  base.certification_id  = f.certification_id;
+    if (f.transport_id)      base.transport_id      = f.transport_id;
   }
   return base;
 };
@@ -283,8 +356,11 @@ const emptyCustomerOrder = (): CustomerOrder => ({
   order_through: '', agent_id: '', agent_name: '', commission: '',
   packing_type_id: '', packing_type: '', confirm_mode: '', confirm_by: '',
   confirm_code: '', expect_delivery: '', pinning: '', rate_type: '', payment_terms: '',
-  freight: '', transport: '', certification_id: '', certification_type: '', certificate_no: '', remarks: '',
+  freight: '', transport_id: '', transport: '', certification_id: '', certification_type: '', certificate_no: '', remarks: '',
   sample_request_id: null,
+  _agentAutoFilled: false,
+  // v9
+  firm: '',
 });
 
 const emptyItem = (): OrderItem => ({
@@ -325,8 +401,6 @@ const parseItems = (raw?: OrderItem[] | string | null): OrderItem[] => {
 };
 
 // ─── SOURCE HELPER ────────────────────────────────────────────────────────────
-// Returns 'sr' when the order originated from a sample-request conversion,
-// 'co' for all manually created customer orders.
 const getOrderSource = (r: CustomerOrder): 'sr' | 'co' => {
   if (r.sample_request_id) return 'sr';
   if (str(r.remarks).toLowerCase().includes('from sample')) return 'sr';
@@ -348,6 +422,83 @@ const safeFetch = async (url: string, options?: RequestInit): Promise<Response |
     if (res.status >= 500) return null;
     return res;
   } catch (e) { console.error(`[safeFetch] Network error for ${url}:`, e); return null; }
+};
+
+// ─── CUSTOMER DROPDOWN ────────────────────────────────────────────────────────
+interface CustomerDropdownProps {
+  value: number | string | undefined;
+  onChange: (customer: Customer | null) => void;
+  customers: Customer[];
+  custLoading: boolean;
+}
+const CustomerDropdown: React.FC<CustomerDropdownProps> = ({ value, onChange, customers, custLoading }) => {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) { setOpen(false); setSearch(''); } };
+    document.addEventListener('mousedown', handler); return () => document.removeEventListener('mousedown', handler);
+  }, []);
+  useEffect(() => { if (open && searchRef.current) searchRef.current.focus(); }, [open]);
+  const filtered = customers.filter(c =>
+    c.customer_name.toLowerCase().includes(search.toLowerCase()) ||
+    (c.customer_id||'').toLowerCase().includes(search.toLowerCase()) ||
+    (c.district||'').toLowerCase().includes(search.toLowerCase()) ||
+    (c.state||'').toLowerCase().includes(search.toLowerCase())
+  );
+  const selected = customers.find(c => c.id === Number(value));
+  const handleSelect = (c: Customer) => { onChange(c); setOpen(false); setSearch(''); };
+  const handleClear  = () => { onChange(null); setOpen(false); setSearch(''); };
+  return (
+    <div className="cust-dd-wrap" ref={wrapRef}>
+      <button type="button" className={`cust-dd-trigger${open?' open':''}${value?' has-value':''}`} onClick={() => setOpen(o => !o)} disabled={custLoading}>
+        <span className="cust-dd-trigger-content">
+          {custLoading ? <span className="cust-dd-loading"><span className="uom-spin" style={{width:12,height:12,borderWidth:1.5,marginRight:6}}/>Loading customers…</span>
+            : selected ? <span className="cust-dd-selected-val">
+                {selected.customer_id && <span className="cust-dd-code-badge">{selected.customer_id}</span>}
+                <span className="cust-dd-name">{selected.customer_name}</span>
+                {selected.district && <span className="cust-dd-district">{selected.district}</span>}
+              </span>
+            : <span className="cust-dd-placeholder">— Choose a customer —</span>}
+        </span>
+        <FiChevronDown className={`cust-dd-chevron${open?' rotated':''}`} size={14}/>
+      </button>
+      {open && (
+        <div className="cust-dd-panel">
+          <div className="cust-dd-search-wrap">
+            <FiSearch className="cust-dd-search-icon" size={13}/>
+            <input ref={searchRef} className="cust-dd-search" placeholder="Search customers, code, district…" value={search} onChange={e => setSearch(e.target.value)}/>
+            {search && <button className="cust-dd-clear" type="button" onClick={() => setSearch('')}><FiX size={13}/></button>}
+          </div>
+          <div className="cust-dd-count">{filtered.length===0 ? <span style={{color:'#c2410c'}}>No customers match "{search}"</span> : <span>{filtered.length} customer{filtered.length!==1?'s':''}{search?' found':' available'}</span>}</div>
+          <div className="cust-dd-list">
+            {value && <div className="cust-dd-option cust-dd-clear-opt" onClick={handleClear}><span>— Clear selection —</span></div>}
+            {filtered.length===0 ? <div className="cust-dd-empty"><FiSearch size={28} color="#cbd5e1"/><span>No customers found</span></div>
+              : filtered.map(c => (
+                <div key={c.id} className={`cust-dd-option${c.id===Number(value)?' selected':''}`} onClick={() => handleSelect(c)}>
+                  <div className="cust-opt-left">
+                    {c.customer_id && <span className="cust-opt-code">{c.customer_id}</span>}
+                  </div>
+                  <div className="cust-opt-right">
+                    <span className="cust-opt-name">{c.customer_name}</span>
+                    {(c.district||c.state) && <span className="cust-opt-loc">{[c.district,c.state].filter(Boolean).join(', ')}</span>}
+                  </div>
+                  {c.id===Number(value) && <FiCheck className="cust-opt-check" size={14}/>}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+      {!open && (
+        <div className="cust-dd-status">
+          {custLoading ? <span style={{color:'#94a3b8'}}>Loading…</span>
+            : customers.length>0 ? <span style={{color:'#94a3b8'}}><FiCheck size={11} style={{marginRight:2}}/>{customers.length} customers loaded — click to select</span>
+            : <span style={{color:'#f59e0b'}}>No customers from API</span>}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ─── HSN DROPDOWN ─────────────────────────────────────────────────────────────
@@ -497,9 +648,11 @@ export default function UnifiedOrderManagement({ user }: Props) {
   const [customers,     setCustomers]     = useState<Customer[]>([]);
   const [agents,        setAgents]        = useState<Agent[]>([]);
   const [packageTypes,  setPackageTypes]  = useState<PackageType[]>([]);
-  // NEW: certification master state (mirrors agents/packageTypes pattern)
   const [certifications, setCertifications] = useState<CertificationMaster[]>([]);
   const [certLoading,    setCertLoading]    = useState(false);
+  const [transports,     setTransports]     = useState<TransportMaster[]>([]);
+  const [transportLoading, setTransportLoading] = useState(false);
+  const [transportError,   setTransportError]   = useState('');
   const [hsnCodes,      setHsnCodes]      = useState<HsnCode[]>([]);
   const [fabrics,       setFabrics]       = useState<FabricMaster[]>([]);
   const [custLoading,   setCustLoading]   = useState(false);
@@ -517,7 +670,6 @@ export default function UnifiedOrderManagement({ user }: Props) {
   const [showCOModal,   setShowCOModal]   = useState(false);
   const [editCOId,      setEditCOId]      = useState<number | null>(null);
   const [coForm,        setCOForm]        = useState<CustomerOrder>(emptyCustomerOrder());
-  const [customerSearch,setCustomerSearch]= useState('');
   const [coSaving,      setCOSaving]      = useState(false);
   const [coError,       setCOError]       = useState('');
   const [modalLoading,  setModalLoading]  = useState(false);
@@ -583,7 +735,7 @@ export default function UnifiedOrderManagement({ user }: Props) {
     } catch { if (notifAvailable===null) setNotifAvailable(false); }
   }, [notifAvailable]);
 
-useEffect(() => {
+  useEffect(() => {
     if (notifAvailable===false) return;
     pollConversionNotifs();
     const t = setInterval(() => { pollConversionNotifs(); }, 8000);
@@ -658,10 +810,6 @@ useEffect(() => {
     finally { setCustLoading(false); }
   }, []);
 
-  const fetchCustomerById = useCallback(async (id: number): Promise<Customer | null> => {
-    try { const res = await safeFetch(`/api/customers/${id}`); if (!res||!res.ok) return null; const data = await res.json(); return (data.data||data) as Customer; } catch { return null; }
-  }, []);
-
   const fetchAgents = useCallback(async () => {
     setAgentLoading(true);
     try { const res = await safeFetch('/api/agents'); if (!res) { setAgents([]); return; } const data = await res.json(); setAgents(data.data||data||[]); } catch { setAgents([]); }
@@ -674,10 +822,6 @@ useEffect(() => {
     finally { setPkgLoading(false); }
   }, []);
 
-  // NEW: Certification master fetcher — same defensive multi-endpoint +
-  // flexible-field-name pattern already used by fetchHsnCodes/fetchFabrics,
-  // since the real route for this master table hasn't been confirmed yet.
-  // Once it's known, trim ENDPOINTS down to the single real one.
   const fetchCertifications = useCallback(async () => {
     setCertLoading(true);
     try {
@@ -705,6 +849,41 @@ useEffect(() => {
       setCertifications(parsed);
     } catch { setCertifications([]); }
     finally { setCertLoading(false); }
+  }, []);
+
+  const fetchTransports = useCallback(async () => {
+    setTransportLoading(true); setTransportError('');
+    try {
+      const res = await safeFetch('/api/transports?limit=500');
+      if (!res || !res.ok) {
+        console.warn(`[fetchTransports] /api/transports -> ${res ? res.status : 'no response (network/auth)'}`);
+        setTransports([]);
+        setTransportError('No transports from API — type manually below');
+        return;
+      }
+      let json: any; try { json = await res.json(); } catch { json = null; }
+      const raw: any[] = Array.isArray(json) ? json
+        : Array.isArray(json?.data) ? json.data
+        : Array.isArray(json?.transports) ? json.transports
+        : Array.isArray(json?.rows) ? json.rows
+        : [];
+
+      if (raw.length===0) {
+        console.warn('[fetchTransports] /api/transports returned no rows.', json);
+        setTransportError('No transports from API — type manually below');
+      }
+
+      const parsed: TransportMaster[] = raw
+        .filter((t:any) => str(t.status).toLowerCase() !== 'inactive')
+        .map((t:any, idx:number) => ({
+          id: t.id ?? idx,
+          transport_name: str(t.transport_company||t.transport_name||t.transporter_name||t.name||''),
+          transport_code: str(t.transport_code||t.code||''),
+        }))
+        .filter((t: TransportMaster) => t.transport_name.length>0);
+      setTransports(parsed);
+    } catch { setTransports([]); setTransportError('Failed to load transports'); }
+    finally { setTransportLoading(false); }
   }, []);
 
   const fetchHsnCodes = useCallback(async () => {
@@ -757,23 +936,83 @@ useEffect(() => {
     finally { setFabricLoading(false); }
   }, []);
 
-  useEffect(() => { loadOrders(); fetchCustomers(); fetchAgents(); fetchPackageTypes(); fetchCertifications(); fetchHsnCodes(); fetchFabrics(); }, [loadOrders,fetchCustomers,fetchAgents,fetchPackageTypes,fetchCertifications,fetchHsnCodes,fetchFabrics]);
+  useEffect(() => { loadOrders(); fetchCustomers(); fetchAgents(); fetchPackageTypes(); fetchCertifications(); fetchTransports(); fetchHsnCodes(); fetchFabrics(); }, [loadOrders,fetchCustomers,fetchAgents,fetchPackageTypes,fetchCertifications,fetchTransports,fetchHsnCodes,fetchFabrics]);
   useEffect(() => { setCurrentPage(1); }, [search]);
 
   const setCO = (key: keyof CustomerOrder) => (e: React.ChangeEvent<HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement>) => setCOForm(prev => ({...prev,[key]:e.target.value}));
 
-  const handleCustomerSelect = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const id = Number(e.target.value);
-    if (!id) { setCOForm(prev => ({...prev,customer_id:'',customer_name:'',customer_address:'',customer_pincode:'',customer_state:'',customer_country:'',customer_gst_no:'',customer_contact_name:'',delivery_address:'',delivery_pincode:'',delivery_state:'',delivery_country:'',delivery_gst_no:'',delivery_contact_name:''})); return; }
-    let c: Customer|undefined|null = customers.find(x => x.id===id);
-    if (!c) c = await fetchCustomerById(id);
-    if (!c) return;
-    setCOForm(prev => ({...prev, customer_id:c!.id, customer_name:str(c!.customer_name), customer_address:str(c!.address), customer_pincode:str(c!.pin_code), customer_state:str(c!.state), customer_country:str(c!.country), customer_gst_no:str(c!.gst_no), customer_contact_name:str(c!.contact_name), delivery_address:str(c!.shipping_address||c!.address), delivery_pincode:str(c!.shipping_pin_code||c!.pin_code), delivery_state:str(c!.shipping_state||c!.state), delivery_country:str(c!.shipping_country||c!.country), delivery_gst_no:str(c!.shipping_gst_no||c!.gst_no), delivery_contact_name:str(c!.shipping_contact_name||c!.contact_name)}));
+  // ── v9: Firm dropdown handler ────────────────────────────────────────────
+  // The selected option itself (AEF or AE) is the value stored to the
+  // single `firm` DB column — there's no separate free-text entry anymore.
+  const handleFirmChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setCOForm(prev => ({ ...prev, firm: e.target.value as FirmType }));
+  };
+
+  // ── v7: handleCustomerSelect — auto-fills address fields AND agent name ──
+  // When a customer is selected, we look up their agent from the loaded
+  // agents master (by agent_id FK first, agent_name string fallback).
+  // The _agentAutoFilled flag lets the UI show the "Auto-filled from
+  // customer" badge. Clearing the customer also clears the agent.
+  const handleCustomerSelect = (customer: Customer | null) => {
+    if (!customer) {
+      setCOForm(prev => ({
+        ...prev,
+        customer_id: '', customer_name: '', customer_address: '', customer_pincode: '',
+        customer_state: '', customer_country: '', customer_gst_no: '', customer_contact_name: '',
+        delivery_address: '', delivery_pincode: '', delivery_state: '', delivery_country: '',
+        delivery_gst_no: '', delivery_contact_name: '',
+        // Clear agent when customer is cleared
+        agent_id: '', agent_name: '', _agentAutoFilled: false,
+      }));
+      return;
+    }
+
+    const c = customer;
+
+    // Resolve agent_id / agent_name from customer record —
+    // supports common field name variations returned by different APIs.
+    const custAgentId   = c.agent_id   ?? c.default_agent_id   ?? c.preferred_agent_id   ?? null;
+    const custAgentName = c.agent_name ?? c.default_agent_name ?? c.preferred_agent       ?? null;
+
+    // Try FK match first (most reliable), then fall back to name match.
+    const matchedAgent = agents.find(a =>
+      (custAgentId   && a.id === Number(custAgentId)) ||
+      (custAgentName && a.agent_name.toLowerCase() === str(custAgentName).toLowerCase())
+    );
+
+    const resolvedAgentId   = matchedAgent ? matchedAgent.id        : (custAgentId   ?? '');
+    const resolvedAgentName = matchedAgent ? matchedAgent.agent_name : (custAgentName ? str(custAgentName) : '');
+    const agentAutoFilled   = !!(resolvedAgentId || resolvedAgentName);
+
+    setCOForm(prev => ({
+      ...prev,
+      customer_id:           c.id,
+      customer_name:         str(c.customer_name),
+      customer_address:      str(c.address),
+      customer_pincode:      str(c.pin_code),
+      customer_state:        str(c.state),
+      customer_country:      str(c.country),
+      customer_gst_no:       str(c.gst_no),
+      customer_contact_name: str(c.contact_name),
+      delivery_address:      str(c.shipping_address      || c.address),
+      delivery_pincode:      str(c.shipping_pin_code     || c.pin_code),
+      delivery_state:        str(c.shipping_state        || c.state),
+      delivery_country:      str(c.shipping_country      || c.country),
+      delivery_gst_no:       str(c.shipping_gst_no       || c.gst_no),
+      delivery_contact_name: str(c.shipping_contact_name || c.contact_name),
+      // Agent auto-fill
+      agent_id:           resolvedAgentId,
+      agent_name:         resolvedAgentName,
+      _agentAutoFilled:   agentAutoFilled,
+    }));
   };
 
   const handleAgentSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const id = Number(e.target.value); if (!id) { setCOForm(prev => ({...prev,agent_id:'',agent_name:''})); return; }
-    const a = agents.find(x => x.id===id); if (a) setCOForm(prev => ({...prev,agent_id:a.id,agent_name:a.agent_name}));
+    const id = Number(e.target.value);
+    if (!id) { setCOForm(prev => ({...prev, agent_id:'', agent_name:'', _agentAutoFilled:false})); return; }
+    const a = agents.find(x => x.id===id);
+    // Manual selection clears the auto-fill badge
+    if (a) setCOForm(prev => ({...prev, agent_id:a.id, agent_name:a.agent_name, _agentAutoFilled:false}));
   };
 
   const handlePackageTypeSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -781,15 +1020,18 @@ useEffect(() => {
     const p = packageTypes.find(x => x.id===id); if (p) setCOForm(prev => ({...prev,packing_type_id:p.id,packing_type:p.package_name}));
   };
 
-  // NEW: Certification select — mirrors handleAgentSelect/handlePackageTypeSelect.
-  // Picking a certification fills BOTH certification_type (label) AND
-  // certificate_no (auto-filled from that certification's stored code).
-  // Clearing the dropdown clears all three so stale state can't linger.
   const handleCertificationSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = Number(e.target.value);
     if (!id) { setCOForm(prev => ({...prev,certification_id:'',certification_type:'',certificate_no:''})); return; }
     const c = certifications.find(x => x.id===id);
     if (c) setCOForm(prev => ({...prev,certification_id:c.id,certification_type:c.certification_type,certificate_no:c.certification_code||prev.certificate_no}));
+  };
+
+  const handleTransportSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = Number(e.target.value);
+    if (!id) { setCOForm(prev => ({...prev,transport_id:'',transport:''})); return; }
+    const t = transports.find(x => x.id===id);
+    if (t) setCOForm(prev => ({...prev,transport_id:t.id,transport:t.transport_name}));
   };
 
   const handleFabricSelect = (fabric: FabricMaster | null) => {
@@ -801,7 +1043,7 @@ useEffect(() => {
   };
 
   const openCOModal = async (r?: CustomerOrder) => {
-    setCOError(''); setOBError(''); setCustomerSearch('');
+    setCOError(''); setOBError('');
     if (r?.id) {
       setModalLoading(true); setShowCOModal(true); setEditCOId(r.id);
       const preSource = normaliseOrder({...r}); setCOForm(preSource);
@@ -827,7 +1069,7 @@ useEffect(() => {
   const closeCOModal = () => {
     setShowCOModal(false); setShowOBModal(false); setEditCOId(null);
     setCOForm(emptyCustomerOrder()); setOBForm(emptyOrderBooking()); setObApplied(false);
-    setCustomerSearch(''); setCOError(''); setOBError(''); setModalLoading(false);
+    setCOError(''); setOBError(''); setModalLoading(false);
   };
 
   const attemptSave = async (url: string, method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -934,35 +1176,37 @@ useEffect(() => {
     }
   };
 
-const buildExportRows = (data: CustomerOrder[]) =>
-  data.map((r, i) => {
-    const custCode = (() => {
-      if (!r.customer_id) return '';
-      if (typeof r.customer_id === 'string' && isNaN(Number(r.customer_id))) return r.customer_id;
-      const matched = customers.find(c => c.id === Number(r.customer_id));
-      return matched?.customer_id ?? str(r.customer_id);
-    })();
-    return {
-      '#':                i + 1,
-      'Order Code':       r.order_code ?? '',
-      'Customer Code':    custCode,
-      'Order Date':       fmtDate(r.order_date),
-      'PO No':            r.po_no ?? '',
-      'PO Date':          fmtDate(r.po_date),
-      'Customer Name':    r.customer_name ?? '',
-      'Customer State':   r.customer_state ?? '',
-      'Delivery At':      r.delivery_at ?? '',
-      'Exp. Delivery':    fmtDate(r.expect_delivery),
-      'Transport':        r.transport ?? '',
-      'Order Type':       r.order_type ?? '',
-      'Sort No':          r.sort_no ?? '',
-      'HSN Code':         r.hsn_code ?? '',
-      'Confirm By':       r.confirm_by ?? '',
-      'Agent':            r.agent_name ?? '',
-      'Net Value':        r.net_value != null ? Number(r.net_value).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '',
-      'Source':           getOrderSource(r) === 'sr' ? 'SR-Converted' : 'CO',
-    };
-  });
+  const buildExportRows = (data: CustomerOrder[]) =>
+    data.map((r, i) => {
+      const custCode = (() => {
+        if (!r.customer_id) return '';
+        if (typeof r.customer_id === 'string' && isNaN(Number(r.customer_id))) return r.customer_id;
+        const matched = customers.find(c => c.id === Number(r.customer_id));
+        return matched?.customer_id ?? str(r.customer_id);
+      })();
+      return {
+        '#':                i + 1,
+        'Order Code':       r.order_code ?? '',
+        'Customer Code':    custCode,
+        'Order Date':       fmtDate(r.order_date),
+        'PO No':            r.po_no ?? '',
+        'PO Date':          fmtDate(r.po_date),
+        'Customer Name':    r.customer_name ?? '',
+        'Customer State':   r.customer_state ?? '',
+        'Delivery At':      r.delivery_at ?? '',
+        'Exp. Delivery':    fmtDate(r.expect_delivery),
+        'Transport':        r.transport ?? '',
+        'Firm':             r.firm || '',
+        'Quality':          r.quality ?? '',
+        'Order Type':       r.order_type ?? '',
+        'Sort No':          r.sort_no ?? '',
+        'HSN Code':         r.hsn_code ?? '',
+        'Confirm By':       r.confirm_by ?? '',
+        'Agent':            r.agent_name ?? '',
+        'Net Value':        r.net_value != null ? Number(r.net_value).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '',
+        'Source':           getOrderSource(r) === 'sr' ? 'SR-Converted' : 'CO',
+      };
+    });
 
   const escapeCsv = (val: any): string => {
     const s = String(val ?? '');
@@ -1052,7 +1296,6 @@ const buildExportRows = (data: CustomerOrder[]) =>
   const paginated  = filtered.slice((currentPage-1)*pageSize, currentPage*pageSize);
   const goTo       = (p: number) => setCurrentPage(Math.min(Math.max(1,p), totalPages));
   const pageNums   = (() => { const nums:number[]=[]; const s=Math.max(1,currentPage-2); const e=Math.min(totalPages,s+4); const start=e-s<4?Math.max(1,e-4):s; for(let i=start;i<=e;i++) nums.push(i); return nums; })();
-  const filteredCustomers = customers.filter(c => c.customer_name.toLowerCase().includes(customerSearch.toLowerCase()));
   const selectedCustomer  = customers.find(c => c.id===Number(coForm.customer_id));
   const isReadonly        = !!coForm.customer_id;
   const obEnabled         = coForm.order_code.trim().length>0;
@@ -1088,7 +1331,7 @@ const buildExportRows = (data: CustomerOrder[]) =>
         .uom-table-wrap::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 0 0 14px 14px; }
         .uom-table-wrap::-webkit-scrollbar-thumb { background: #c7d3e8; border-radius: 10px; }
         .uom-table-wrap::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        .uom-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1000px; }
+        .uom-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1080px; }
         .uom-table thead tr { background: linear-gradient(135deg, #1a56db 0%, #2563eb 100%); }
         .uom-table th { padding: 12px 16px; color: #fff; font-weight: 600; text-align: left; white-space: nowrap; font-size: 12px; letter-spacing: 0.03em; text-transform: uppercase; border-right: 1px solid rgba(255,255,255,0.08); }
         .uom-table th:last-child { border-right: none; }
@@ -1100,15 +1343,12 @@ const buildExportRows = (data: CustomerOrder[]) =>
         .uom-table tbody tr:last-child td { border-bottom: none; }
         .uom-code { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 600; color: #1a56db; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 5px; padding: 2px 8px; display: inline-block; }
         .uom-cust-code-badge { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; font-weight: 600; color: #0f766e; background: #f0fdf4; border: 1px solid #86efac; border-radius: 5px; padding: 2px 7px; display: inline-block; white-space: nowrap; }
+        .uom-firm-badge { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 5px; padding: 2px 8px; display: inline-block; white-space: nowrap; letter-spacing: 0.03em; }
+        .uom-quality-cell { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; font-size: 12.5px; vertical-align: middle; }
         .uom-serial { color: #94a3b8; font-size: 12px; }
         .uom-ob-chip { display: inline-flex; align-items: center; gap: 4px; background: #f0fdf4; color: #15803d; border: 1px solid #86efac; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-
-        /* ── SOURCE CHIPS ── */
-        /* SR-Converted: purple, same as old "Converted" but updated label */
         .uom-src-sr-chip { display: inline-flex; align-items: center; gap: 4px; background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-        /* CO: teal — manually created customer order */
         .uom-src-co-chip { display: inline-flex; align-items: center; gap: 4px; background: #f0fdfa; color: #0f766e; border: 1px solid #5eead4; border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-
         .uom-acts { display: flex; align-items: center; gap: 6px; justify-content: center; }
         .uom-edit-btn { display: inline-flex; align-items: center; gap: 5px; background: #eff6ff; color: #1a56db; border: 1px solid #bfdbfe; padding: 5px 11px; border-radius: 7px; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background 0.12s, border-color 0.12s; font-family: inherit; white-space: nowrap; }
         .uom-edit-btn:hover { background: #dbeafe; border-color: #93c5fd; }
@@ -1154,12 +1394,6 @@ const buildExportRows = (data: CustomerOrder[]) =>
         .uom-cust-content { flex: 1; min-width: 240px; }
         .uom-cust-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #1d4ed8; margin-bottom: 7px; }
         .uom-cust-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-        .uom-cust-search { padding: 7px 12px; border: 1.5px solid #93c5fd; border-radius: 8px; font-size: 14px; font-family: inherit; color: #1a2332; background: #fff; outline: none; min-width: 300px; transition: border 0.15s; }
-        .uom-cust-search:focus { border-color: #1a56db; }
-        .uom-cust-sel-wrap { position: relative; flex: 1; min-width: 220px; }
-        .uom-cust-sel { width: 100%; padding: 8px 32px 8px 12px; border: 1.5px solid #93c5fd; border-radius: 8px; font-size: 14px; font-weight: 500; font-family: inherit; color: #1a2332; background: #fff; outline: none; cursor: pointer; appearance: none; transition: border 0.15s; }
-        .uom-cust-sel:focus { border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
-        .uom-cust-chevron { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #64748b; }
         .uom-autofill-badge { display: inline-flex; align-items: center; gap: 5px; background: #dcfce7; color: #15803d; border: 1px solid #86efac; border-radius: 20px; padding: 3px 10px; font-size: 11.5px; font-weight: 700; }
         .uom-autofill-hint { font-size: 11px; color: #15803d; font-weight: 600; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
         .uom-section { background: #f8fafc; border: 1px solid #e8edf4; border-radius: 11px; padding: 15px; margin-bottom: 14px; }
@@ -1210,8 +1444,6 @@ const buildExportRows = (data: CustomerOrder[]) =>
         .uom-save-btn { padding: 9px 24px; border: none; background: #16a34a; color: #fff; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; box-shadow: 0 2px 8px rgba(22,163,74,0.3); transition: background 0.15s; display: flex; align-items: center; gap: 6px; }
         .uom-save-btn:hover:not(:disabled) { background: #15803d; }
         .uom-save-btn:disabled { background: #86efac; cursor: not-allowed; }
-
-        /* ── Export / Print dropdown ── */
         .uom-export-wrap { position: relative; flex-shrink: 0; }
         .uom-export-trigger { display: flex; align-items: center; gap: 6px; background: #fff; color: #1a56db; border: 1.5px solid #bfdbfe; border-radius: 10px; padding: 9px 14px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; touch-action: manipulation; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; }
         .uom-export-trigger:hover:not(:disabled) { border-color: #1a56db; background: #eff6ff; }
@@ -1226,7 +1458,41 @@ const buildExportRows = (data: CustomerOrder[]) =>
         .uom-export-item-icon.csv   { background: #f3f0ff; color: #7c3aed; }
         .uom-export-item-icon.excel { background: #f0fdf4; color: #16a34a; }
         .uom-export-item-icon.print { background: #eff6ff; color: #1a56db; }
-
+        .cust-dd-wrap { position: relative; flex: 1; min-width: 280px; }
+        .cust-dd-trigger { width:100%; display:flex; align-items:center; justify-content:space-between; padding:0 12px; height:40px; border:1.5px solid #93c5fd; border-radius:8px; background:#fff; color:#1a2332; font-size:14px; font-family:inherit; cursor:pointer; outline:none; transition:border 0.15s,box-shadow 0.15s; text-align:left; }
+        .cust-dd-trigger:hover:not(:disabled) { border-color:#1a56db; }
+        .cust-dd-trigger.open { border-color:#1a56db; border-bottom-left-radius:0; border-bottom-right-radius:0; box-shadow:0 0 0 3px rgba(26,86,219,0.12); }
+        .cust-dd-trigger.has-value { background:#f8fbff; }
+        .cust-dd-trigger:disabled { background:#f8fafc; color:#94a3b8; cursor:not-allowed; }
+        .cust-dd-trigger-content { flex:1; overflow:hidden; min-width:0; }
+        .cust-dd-loading { color:#94a3b8; font-size:12.5px; display:flex; align-items:center; }
+        .cust-dd-placeholder { color:#9ca3af; }
+        .cust-dd-selected-val { display:flex; align-items:center; gap:8px; overflow:hidden; }
+        .cust-dd-code-badge { background:#1a56db; color:#fff; border-radius:5px; padding:1px 8px; font-size:11.5px; font-weight:700; font-family:'JetBrains Mono',monospace; white-space:nowrap; flex-shrink:0; }
+        .cust-dd-name { font-weight:600; color:#1a2332; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .cust-dd-district { font-size:11.5px; color:#64748b; white-space:nowrap; flex-shrink:0; }
+        .cust-dd-chevron { flex-shrink:0; color:#64748b; margin-left:8px; transition:transform 0.2s; }
+        .cust-dd-chevron.rotated { transform:rotate(180deg); }
+        .cust-dd-panel { position:absolute; top:100%; left:0; right:0; z-index:300; background:#fff; border:1.5px solid #1a56db; border-top:none; border-bottom-left-radius:8px; border-bottom-right-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.14); animation:ddSlide 0.15s ease; }
+        .cust-dd-search-wrap { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #e8edf4; background:#f8fbff; }
+        .cust-dd-search-icon { flex-shrink:0; color:#94a3b8; }
+        .cust-dd-search { flex:1; border:none; outline:none; font-size:12.5px; font-family:inherit; color:#1a2332; background:transparent; }
+        .cust-dd-clear { background:none; border:none; cursor:pointer; color:#94a3b8; padding:0; line-height:1; display:flex; align-items:center; }
+        .cust-dd-count { padding:4px 12px; font-size:11px; color:#94a3b8; font-weight:600; border-bottom:1px solid #f1f5f9; }
+        .cust-dd-list { max-height:260px; overflow-y:auto; }
+        .cust-dd-option { display:flex; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; border-bottom:1px solid #f8fafc; transition:background 0.1s; }
+        .cust-dd-option:hover { background:#eff6ff; }
+        .cust-dd-option.selected { background:#dbeafe; }
+        .cust-dd-option.cust-dd-clear-opt { color:#64748b; font-size:12px; font-style:italic; border-bottom:1px solid #e8edf4; }
+        .cust-opt-left { flex-shrink:0; }
+        .cust-opt-code { font-family:'JetBrains Mono',monospace; font-size:11.5px; font-weight:700; color:#1a56db; background:#eff6ff; border:1px solid #bfdbfe; border-radius:4px; padding:1px 7px; white-space:nowrap; }
+        .cust-dd-option.selected .cust-opt-code { background:#1a56db; color:#fff; border-color:#1a56db; }
+        .cust-opt-right { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+        .cust-opt-name { font-size:13px; color:#1e293b; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .cust-opt-loc { font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .cust-opt-check { flex-shrink:0; color:#1a56db; }
+        .cust-dd-empty { display:flex; flex-direction:column; align-items:center; gap:6px; padding:20px; color:#94a3b8; font-size:12.5px; }
+        .cust-dd-status { font-size:11px; margin-top:4px; }
         .ob-overlay { position: fixed; inset: 0; z-index: 1100; background: rgba(5,15,35,0.65); display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow-y: auto; }
         .ob-modal { width: 100%; max-width: 980px; background: #fff; border-radius: 18px; box-shadow: 0 16px 64px rgba(0,0,0,0.3); overflow: hidden; margin: auto; animation: slideUp 0.2s ease; border-top: 4px solid #0f766e; }
         .ob-mhead { display: flex; align-items: center; justify-content: space-between; padding: 15px 24px; background: linear-gradient(135deg,#0f766e,#0d9488); }
@@ -1488,26 +1754,26 @@ const buildExportRows = (data: CustomerOrder[]) =>
                 <tr>
                   <th style={{width:40}}>#</th>
                   <th>Order Code</th>
-                  {/* ── NEW: Customer Code column ── */}
                   <th>Cust. Code</th>
                   <th>Order Date</th>
                   <th>PO No</th>
                   <th>Customer Name</th>
                   <th>State</th>
                   <th>Transport</th>
+                  <th>Firm</th>
+                  <th>Quality</th>
                   <th>Exp. Delivery</th>
                   <th>Booking</th>
-                  {/* SOURCE column — header unchanged, values updated */}
                   <th>Source</th>
                   <th className="tc" style={{width:140}}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {tableLoading ? (
-                  <tr><td colSpan={12} className="uom-empty"><span className="uom-spin"/>Loading orders…</td></tr>
+                  <tr><td colSpan={14} className="uom-empty"><span className="uom-spin"/>Loading orders…</td></tr>
                 ) : tableError ? (
                   <tr>
-                    <td colSpan={12} className="uom-table-err">
+                    <td colSpan={14} className="uom-table-err">
                       <FiAlertTriangle size={14} style={{marginRight:6,verticalAlign:'middle'}}/>{tableError}
                       <div className="uom-table-err-hint">Check the browser console. Make sure vite.config.ts has the /api proxy configured.</div>
                       <div style={{marginTop:8}}>
@@ -1518,44 +1784,46 @@ const buildExportRows = (data: CustomerOrder[]) =>
                     </td>
                   </tr>
                 ) : paginated.length===0 ? (
-                  <tr><td colSpan={12} className="uom-empty">{search ? 'No orders match your search.' : 'No orders found. Click "New Order" to create one.'}</td></tr>
+                  <tr><td colSpan={14} className="uom-empty">{search ? 'No orders match your search.' : 'No orders found. Click "New Order" to create one.'}</td></tr>
                 ) : paginated.map((r, i) => {
                   const src = getOrderSource(r);
-                const custCode = (() => {
-  if (!r.customer_id) return '';
-  // If it's already a string code (e.g. "CUS-2026-001"), use it directly
-  if (typeof r.customer_id === 'string' && isNaN(Number(r.customer_id))) return r.customer_id;
-  // Otherwise it's a numeric FK — look up the customer master
-  const matched = customers.find(c => c.id === Number(r.customer_id));
-  return matched?.customer_id ?? str(r.customer_id);
-})();
+                  const custCode = (() => {
+                    if (!r.customer_id) return '';
+                    if (typeof r.customer_id === 'string' && isNaN(Number(r.customer_id))) return r.customer_id;
+                    const matched = customers.find(c => c.id === Number(r.customer_id));
+                    return matched?.customer_id ?? str(r.customer_id);
+                  })();
                   return (
                     <tr key={r.id}>
                       <td><span className="uom-serial">{(currentPage-1)*pageSize+i+1}</span></td>
                       <td><span className="uom-code">{r.order_code}</span></td>
-
-                      {/* ── Customer Code cell ── */}
-                     <td>
-  {custCode
-    ? <span className="uom-cust-code-badge">{custCode}</span>
-    : <span style={{color:'#94a3b8',fontSize:12}}>—</span>}
-</td>
-
+                      <td>
+                        {custCode
+                          ? <span className="uom-cust-code-badge">{custCode}</span>
+                          : <span style={{color:'#94a3b8',fontSize:12}}>—</span>}
+                      </td>
                       <td style={{fontSize:12.5}}>{fmtDate(r.order_date)}</td>
                       <td style={{fontFamily:'JetBrains Mono,monospace',fontSize:12}}>{r.po_no||'—'}</td>
                       <td style={{fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis'}}>{r.customer_name||'—'}</td>
                       <td style={{fontSize:12.5}}>{r.customer_state||'—'}</td>
                       <td style={{fontSize:12.5}}>{r.transport||'—'}</td>
+                      <td>
+                        {r.firm
+                          ? <span className="uom-firm-badge">{r.firm}</span>
+                          : <span style={{color:'#94a3b8',fontSize:12}}>—</span>}
+                      </td>
+                      <td>
+                        {r.quality
+                          ? <span className="uom-quality-cell" title={r.quality}>{r.quality}</span>
+                          : <span style={{color:'#94a3b8',fontSize:12}}>—</span>}
+                      </td>
                       <td style={{fontSize:12.5}}>{fmtDate(r.expect_delivery)}</td>
                       <td>{r.hsn_code ? <span className="uom-ob-chip"><FiCheck size={10}/> Added</span> : <span style={{color:'#94a3b8',fontSize:12}}>—</span>}</td>
-
-                      {/* ── SOURCE cell: SR-Converted | CO ── */}
                       <td>
                         {src === 'sr'
                           ? <span className="uom-src-sr-chip"><MdSyncAlt size={11}/> SR-Converted</span>
                           : <span className="uom-src-co-chip"><HiOutlineDocumentText size={11}/> CO</span>}
                       </td>
-
                       <td>
                         <div className="uom-acts">
                           <button className="uom-edit-btn" onClick={() => openCOModal(r)}><FiEdit2 size={12}/> Edit</button>
@@ -1618,30 +1886,28 @@ const buildExportRows = (data: CustomerOrder[]) =>
               )}
               <form onSubmit={handleCOSave}>
                 <div className="uom-mbody">
+                  {/* ── Customer selector banner ── */}
                   <div className="uom-cust-banner">
                     <div className="uom-cust-icon"><FiUser size={18} color="#fff"/></div>
                     <div className="uom-cust-content">
                       <div className="uom-cust-label">
                         Select Customer
-                        {custLoading && <span className="uom-master-badge loading"><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>}
+                        {custLoading && <span className="uom-master-badge loading" style={{marginLeft:6}}><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>}
                         {!custLoading && customers.length>0 && <span className="uom-master-badge"><FiCheck size={10}/> {customers.length} customers</span>}
                         {!custLoading && customers.length===0 && <span className="uom-master-badge empty">No customers loaded</span>}
                       </div>
                       <div className="uom-cust-row">
-                        <input className="uom-cust-search" placeholder="Search customers…" value={customerSearch} onChange={e => setCustomerSearch(e.target.value)}/>
-                        <div className="uom-cust-sel-wrap">
-                          <select className="uom-cust-sel" value={coForm.customer_id||''} onChange={handleCustomerSelect} disabled={custLoading}>
-                            <option value="">— Choose a customer —</option>
-                            {custLoading ? <option disabled>Loading customers…</option>
-                              : filteredCustomers.length===0 ? <option disabled>No customers found</option>
-                              : filteredCustomers.map(c => <option key={c.id} value={c.id}>{c.customer_id?`[${c.customer_id}] `:''}{c.customer_name}{c.district?` — ${c.district}`:''}</option>)}
-                          </select>
-                          <FiChevronDown className="uom-cust-chevron" size={13}/>
-                        </div>
+                        <CustomerDropdown value={coForm.customer_id} onChange={handleCustomerSelect} customers={customers} custLoading={custLoading}/>
                         {coForm.customer_id && <span className="uom-autofill-badge"><FiCheck size={11}/> Auto-filled</span>}
                       </div>
                       {selectedCustomer && <div className="uom-autofill-hint"><FiCheck size={11}/> {selectedCustomer.customer_name}{selectedCustomer.address?` · ${selectedCustomer.address}`:''}{selectedCustomer.state?`, ${selectedCustomer.state}`:''}</div>}
-                      {coForm.customer_name && !coForm.customer_id && <div style={{fontSize:11,color:'#7c3aed',marginTop:4}}>Pre-filled: <strong>{coForm.customer_name}</strong> — select from list above to auto-fill address fields</div>}
+                      {/* v7: show agent auto-fill hint in customer banner when agent was resolved */}
+                      {coForm._agentAutoFilled && coForm.agent_name && (
+                        <div style={{fontSize:11,color:'#7c3aed',fontWeight:600,marginTop:4,display:'flex',alignItems:'center',gap:4}}>
+                          <FiCheck size={11}/> Agent auto-filled: <strong>{coForm.agent_name}</strong>
+                        </div>
+                      )}
+                      {coForm.customer_name && !coForm.customer_id && <div style={{fontSize:11,color:'#7c3aed',marginTop:4}}>Pre-filled: <strong>{coForm.customer_name}</strong> — select from list above to auto-fill address &amp; agent fields</div>}
                     </div>
                   </div>
 
@@ -1660,6 +1926,7 @@ const buildExportRows = (data: CustomerOrder[]) =>
                   </div>
 
                   <div className="uom-panels">
+                    {/* ── Customer Details panel ── */}
                     <div className="uom-panel">
                       <div className="uom-panel-head"><FiUser size={12}/> Customer Details</div>
                       <div className="uom-panel-body">
@@ -1674,6 +1941,8 @@ const buildExportRows = (data: CustomerOrder[]) =>
                         <div className="uom-field"><label className="uom-label">Contact Name</label><input className={`uom-input${isReadonly?' ro':''}`} value={coForm.customer_contact_name} onChange={setCO('customer_contact_name')} readOnly={isReadonly}/></div>
                       </div>
                     </div>
+
+                    {/* ── Delivery Details panel ── */}
                     <div className="uom-panel">
                       <div className="uom-panel-head"><FiTruck size={12}/> Delivery Details</div>
                       <div className="uom-panel-body">
@@ -1687,14 +1956,56 @@ const buildExportRows = (data: CustomerOrder[]) =>
                         <div className="uom-field"><label className="uom-label">GST No</label><input className="uom-input" value={coForm.delivery_gst_no} onChange={setCO('delivery_gst_no')}/></div>
                         <div className="uom-field"><label className="uom-label">Contact Name</label><input className="uom-input" value={coForm.delivery_contact_name} onChange={setCO('delivery_contact_name')}/></div>
                         <div className="uom-field"><label className="uom-label">Expected Delivery</label><input type="date" className="uom-input" value={coForm.expect_delivery} onChange={setCO('expect_delivery')}/></div>
-                        <div className="uom-field"><label className="uom-label">Transport</label><input className="uom-input" value={coForm.transport} onChange={setCO('transport')}/></div>
+
+                        {/* Transport master-backed select */}
+                        <div className="uom-field">
+                          <label className="uom-label">Transport
+                            {transportLoading ? <span className="uom-master-badge loading" style={{marginLeft:6}}><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>
+                              : transports.length>0 ? <span className="uom-master-badge" style={{marginLeft:6}}><FiCheck size={10}/> {transports.length}</span>
+                              : <span className="uom-master-badge empty" style={{marginLeft:6}}>None</span>}
+                          </label>
+                          <div className="uom-sel-wrap">
+                            <select className="uom-select" value={coForm.transport_id?Number(coForm.transport_id):''} onChange={handleTransportSelect} disabled={transportLoading}>
+                              <option value="">— Select Transport —</option>
+                              {transports.map(t => <option key={t.id} value={t.id}>{t.transport_code?`[${t.transport_code}] `:''}{t.transport_name}</option>)}
+                            </select>
+                            <FiChevronDown className="uom-sel-chev" size={13}/>
+                          </div>
+                          {coForm.transport && <div style={{fontSize:11,color:'#15803d',fontWeight:600,marginTop:3,display:'flex',alignItems:'center',gap:3}}><FiCheck size={10}/> {coForm.transport}</div>}
+                          {!transportLoading && transports.length===0 && (
+                            <input className="uom-input" style={{marginTop:6}} placeholder="Or type transport manually (e.g. DTDC, FedEx, Self)" value={coForm.transport} onChange={setCO('transport')}/>
+                          )}
+                        </div>
+
                         <div className="uom-field"><label className="uom-label">Freight</label><input className="uom-input" value={coForm.freight} onChange={setCO('freight')}/></div>
+
+                        {/* ── v9: Firm dropdown (AEF / AE) — selection IS the value ── */}
+                        <div className="uom-field">
+                          <label className="uom-label">Firm</label>
+                          <div className="uom-sel-wrap">
+                            <select className="uom-select" value={coForm.firm || ''} onChange={handleFirmChange}>
+                              <option value="">— Select Firm —</option>
+                              <option value="AEF">AEF</option>
+                              <option value="AE">AE</option>
+                            </select>
+                            <FiChevronDown className="uom-sel-chev" size={13}/>
+                          </div>
+                          {coForm.firm && (
+                            <div style={{fontSize:11,color:'#15803d',fontWeight:600,marginTop:3,display:'flex',alignItems:'center',gap:3}}>
+                              <FiCheck size={10}/> {coForm.firm}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
+
+                    {/* ── Order Terms panel ── */}
                     <div className="uom-panel">
                       <div className="uom-panel-head"><FiFileText size={12}/> Order Terms</div>
                       <div className="uom-panel-body">
                         <div className="uom-field"><label className="uom-label">Order Through</label><input className="uom-input" value={coForm.order_through} onChange={setCO('order_through')}/></div>
+
+                        {/* ── Agent Name (v7: may be auto-filled from customer) ── */}
                         <div className="uom-field">
                           <label className="uom-label">Agent Name
                             {agentLoading ? <span className="uom-master-badge loading" style={{marginLeft:6}}><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>
@@ -1702,15 +2013,34 @@ const buildExportRows = (data: CustomerOrder[]) =>
                               : <span className="uom-master-badge empty" style={{marginLeft:6}}>None</span>}
                           </label>
                           <div className="uom-sel-wrap">
-                            <select className="uom-select" value={coForm.agent_id?Number(coForm.agent_id):''} onChange={handleAgentSelect} disabled={agentLoading}>
+                            <select
+                              className="uom-select"
+                              value={coForm.agent_id ? Number(coForm.agent_id) : ''}
+                              onChange={handleAgentSelect}
+                              disabled={agentLoading}
+                              style={coForm._agentAutoFilled ? {borderColor:'#86efac',background:'#f0fdf4'} : {}}
+                            >
                               <option value="">— Select Agent —</option>
                               {agents.map(a => <option key={a.id} value={a.id}>{a.agent_code?`[${a.agent_code}] `:''}{a.agent_name}</option>)}
                             </select>
                             <FiChevronDown className="uom-sel-chev" size={13}/>
                           </div>
-                          {coForm.agent_name && <div style={{fontSize:11,color:'#15803d',fontWeight:600,marginTop:3,display:'flex',alignItems:'center',gap:3}}><FiCheck size={10}/> {coForm.agent_name}</div>}
+                          {coForm.agent_name && (
+                            <div style={{fontSize:11,color:'#15803d',fontWeight:600,marginTop:3,display:'flex',alignItems:'center',gap:3,flexWrap:'wrap'}}>
+                              <FiCheck size={10}/> {coForm.agent_name}
+                              {/* v7: subtle badge when auto-filled from customer */}
+                              {coForm._agentAutoFilled && (
+                                <span style={{background:'#dcfce7',color:'#166534',fontSize:10,borderRadius:4,padding:'1px 6px',border:'1px solid #86efac',marginLeft:2}}>
+                                  Auto-filled from customer
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
+
                         <div className="uom-field"><label className="uom-label">Commission (%)</label><input type="number" step="0.01" className="uom-input" value={coForm.commission} onChange={setCO('commission')}/></div>
+
+                        {/* Packing Type */}
                         <div className="uom-field">
                           <label className="uom-label">Packing Type
                             {pkgLoading ? <span className="uom-master-badge loading" style={{marginLeft:6}}><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>
@@ -1726,6 +2056,7 @@ const buildExportRows = (data: CustomerOrder[]) =>
                           </div>
                           {coForm.packing_type && <div style={{fontSize:11,color:'#15803d',fontWeight:600,marginTop:3,display:'flex',alignItems:'center',gap:3}}><FiCheck size={10}/> {coForm.packing_type}</div>}
                         </div>
+
                         <div className="uom-field"><label className="uom-label">Confirm Mode</label><input className="uom-input" value={coForm.confirm_mode} onChange={setCO('confirm_mode')}/></div>
                         <div className="uom-field"><label className="uom-label">Confirm By</label><input className="uom-input" value={coForm.confirm_by} onChange={setCO('confirm_by')}/></div>
                         <div className="uom-field"><label className="uom-label">Confirm Code</label><input className="uom-input" value={coForm.confirm_code} onChange={setCO('confirm_code')}/></div>
@@ -1733,9 +2064,7 @@ const buildExportRows = (data: CustomerOrder[]) =>
                         <div className="uom-field"><label className="uom-label">Rate Type</label><input className="uom-input" value={coForm.rate_type} onChange={setCO('rate_type')}/></div>
                         <div className="uom-field"><label className="uom-label">Payment Terms</label><input className="uom-input" value={coForm.payment_terms} onChange={setCO('payment_terms')}/></div>
 
-                        {/* ── Certification Type: now a master-backed dropdown ──
-                            Selecting an option auto-fills Certificate No
-                            below from that certification's stored code. */}
+                        {/* Certification Type */}
                         <div className="uom-field">
                           <label className="uom-label">Certification Type
                             {certLoading ? <span className="uom-master-badge loading" style={{marginLeft:6}}><span className="uom-spin" style={{width:10,height:10,borderWidth:1.5}}/>Loading…</span>
@@ -1759,12 +2088,12 @@ const buildExportRows = (data: CustomerOrder[]) =>
                           )}
                         </div>
                         <div className="uom-field"><label className="uom-label">Certificate No</label><input className="uom-input" value={coForm.certificate_no} onChange={setCO('certificate_no')}/></div>
-
                         <div className="uom-field"><label className="uom-label">Remarks</label><textarea className="uom-textarea" value={coForm.remarks} onChange={setCO('remarks')}/></div>
                       </div>
                     </div>
                   </div>
 
+                  {/* Order Details strip */}
                   <div className={`uom-ob-strip ${obApplied?'applied':'pending'}`}>
                     <div className="uom-ob-strip-icon">{obApplied ? <FiPackage size={18}/> : <RiFileList3Line size={18}/>}</div>
                     <div className="uom-ob-strip-body">

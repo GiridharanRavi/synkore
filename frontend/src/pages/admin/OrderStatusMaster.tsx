@@ -1,19 +1,34 @@
-// OrderStatusMaster.tsx
-// Order Status tracking page — matches the CustomerOrder (UnifiedOrderManagement) UI style.
-//
-// FEATURES:
-//   • List all order statuses with search, pagination, page-size selector
-//   • Status badge auto-colours: Pending/In Process/Part Delivery/Completed/Cancel
-//   • Meter progress bar (delivered vs total)
-//   • Create / Edit modal with:
-//       – Order Code picker (loads from existing order_bookings)
-//       – Total meter input
-//       – Delivery schedule: split deliveries with date + meter + notes
-//       – Cancel toggle
-//       – Remarks
-//       – Auto status calculation (client-side preview)
-//   • Delete confirmation modal
-//   • Export: CSV, Excel (.xls), Print — same dropdown pattern as CustomerOrder
+// OrderStatusMaster.tsx  — UPDATED
+// New features:
+//   • When an order is selected in the modal:
+//       – Combined "Delivery Address" auto-filled from
+//         delivery_at + delivery_address + state + country + pincode + GST No
+//       – "Expected Completion Date" auto-filled from expect_delivery
+//   • Delivery Timeline Analysis table (below the delivery schedule in the modal):
+//       – Each delivery row compared against expected completion date
+//       – Delayed deliveries: RED, shows negative day count (e.g. −5 days late)
+//       – On-time / early deliveries: GREEN
+//       – NEW: dedicated "Actual Completion vs Expected" summary row that jumps
+//        straight to the true completion date (last delivery once fully
+//        delivered, else latest delivery so far) and shows the day delay in
+//        RED with a minus sign, or GREEN if on-time/early
+//   • Main list table: new "Expected" column + per-row delay badge next to status
+//       – Delivery Dates column now lists each date on its OWN row/line
+//        instead of being comma-joined into one string
+//   • Main list table now also shows "Order Date" and "Delivery Address"
+//        columns (fetched/enriched from the linked order, same source used
+//        by the modal), so users don't have to open a record to see them.
+//   • CHANGES v2 (this pass):
+//       – Added a "Construction" column to the main list table (between
+//        Order Date and Expected Delivery) showing each record's `quality`
+//        value — the fabric quality / full construction description
+//        sourced from the linked order — in a truncated, title-tooltipped
+//        cell so long descriptions don't blow out the row height. This was
+//        already being fetched (enrichWithDeliveryDates / openModal) and
+//        already exported in CSV/Excel/Print, but was missing from the
+//        on-screen table itself.
+//       – colSpan on the loading/error/empty table rows bumped from 15 → 16
+//        to match the new column count.
 
 import React, {
   useEffect, useState, useMemo, useCallback, useRef,
@@ -22,7 +37,7 @@ import {
   FiSearch, FiX, FiChevronDown, FiCheck, FiPlus, FiEdit2, FiTrash2,
   FiAlertTriangle, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight,
   FiRefreshCw, FiDownload, FiTruck, FiActivity, FiCalendar, FiPackage,
-  FiXCircle,
+  FiXCircle, FiBriefcase, FiMapPin, FiClock, FiFlag,
 } from 'react-icons/fi';
 import { BiSave } from 'react-icons/bi';
 
@@ -51,37 +66,70 @@ interface DeliveryLine {
 }
 
 interface OrderStatusRecord {
-  id?:              number;
-  order_booking_id?: number | string;
-  order_code:       string;
-  customer_id?:     number | string;
-  customer_name?:   string;
-  order_date?:      string;
-  po_no?:           string;
-  transport?:       string;
-  agent_name?:      string;
-  total_meter:      number;
-  delivered_meter?: number;
-  pending_meter?:   number;
-  status?:          StatusType;
-  is_cancelled?:    0 | 1;
-  remarks?:         string;
-  deliveries?:      DeliveryLine[];
+  id?:                      number;
+  order_booking_id?:        number | string;
+  order_code:               string;
+  customer_id?:             number | string;
+  customer_name?:           string;
+  firm_name?:               string;
+  order_date?:              string;
+  po_no?:                   string;
+  transport?:               string;
+  agent_name?:              string;
+  total_meter:              number;
+  delivered_meter?:         number;
+  pending_meter?:           number;
+  status?:                  StatusType;
+  is_cancelled?:            0 | 1;
+  remarks?:                 string;
+  deliveries?:              DeliveryLine[];
+  delivery_count?:          number;
+  last_delivery_date?:      string | null;
+  delivery_dates?:          string[] | null;
+  // ── NEW: from linked order ───────────────────────────────────────────────
+  expect_delivery?:         string;      // ISO yyyy-mm-dd — expected completion date
+  combined_delivery_address?: string;    // combined display string (NOT saved to DB)
+  // ── NEW: construction / quality (full description) text, sourced from the
+  //         linked order's `quality` column ──────────────────────────────
+  quality?:                  string;
+  // ── NEW: raw delivery/address fields (source for combined_delivery_address,
+  //         also enriched onto list rows so the main table can show them) ──
+  delivery_at?:              string;
+  delivery_address?:         string;
+  delivery_state?:           string;
+  delivery_country?:         string;
+  delivery_pincode?:         string;
+  delivery_gst_no?:          string;
 }
 
 interface CustomerOrderRef {
   id: number;
   order_code: string;
   customer_name: string;
+  firm?: string;
+  firm_name?: string;
   order_date?: string;
   sort_no?: string;
   basic_value?: number;
   net_value?: number;
   items?: Array<{ meter: number }> | string;
+  // ── NEW: delivery & schedule fields ──────────────────────────────────────
+  expect_delivery?:     string;
+  delivery_at?:         string;
+  delivery_address?:    string;
+  delivery_state?:      string;
+  delivery_country?:    string;
+  delivery_pincode?:    string;
+  delivery_gst_no?:     string;
+  // ── NEW: construction / quality (full description) ──────────────────────
+  quality?:              string;
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const str = (v: unknown): string => (v == null ? '' : String(v));
+
+const getOrderFirm = (o?: CustomerOrderRef | null): string =>
+  (o?.firm_name && o.firm_name.trim()) || (o?.firm && o.firm.trim()) || '';
 
 const fmtDate = (v?: string | null): string => {
   if (!v) return '—';
@@ -92,7 +140,10 @@ const fmtDate = (v?: string | null): string => {
 };
 
 const toISODate = (v: string): string => {
+  if (!v) return '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const s = v.includes('T') ? v.slice(0, 10) : v;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const d = new Date(v);
   if (isNaN(d.getTime())) return '';
   return d.toISOString().slice(0, 10);
@@ -103,7 +154,59 @@ const today = (): string => new Date().toISOString().slice(0, 10);
 const fmt2 = (n: number): string =>
   n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// Calculates status from totals — mirrors backend logic
+/** Days variance: +ve = late (delivery AFTER expected), −ve = early */
+const calcDaysVariance = (deliveryDate: string, expectedDate: string): number | null => {
+  if (!deliveryDate || !expectedDate) return null;
+  const d = new Date(deliveryDate);
+  const e = new Date(expectedDate);
+  if (isNaN(d.getTime()) || isNaN(e.getTime())) return null;
+  return Math.round((d.getTime() - e.getTime()) / (1000 * 60 * 60 * 24));
+};
+
+/** Plain-text countdown (Order Date → Expected Completion Date), used for exports.
+ *  Mirrors the badge logic in renderCountdownBadge but returns a string instead of JSX. */
+const countdownText = (r: {
+  expect_delivery?: string;
+  status?: StatusType;
+  last_delivery_date?: string | null;
+}): string => {
+  if (!r.expect_delivery) return '';
+  if (r.status === 'Cancel') return 'N/A';
+  if (r.status === 'Completed') {
+    const actualDate = r.last_delivery_date || null;
+    const diff = actualDate ? calcDaysVariance(actualDate, r.expect_delivery) : null;
+    if (diff === null) return 'Completed';
+    if (diff > 0) return `Finished -${diff}d late`;
+    if (diff === 0) return 'Finished on time';
+    return `Finished +${Math.abs(diff)}d early`;
+  }
+  const diffToday = calcDaysVariance(today(), r.expect_delivery);
+  if (diffToday === null) return '';
+  const daysLeft = -diffToday;
+  if (daysLeft > 0) return `${daysLeft}d left`;
+  if (daysLeft === 0) return 'Due today';
+  return `${Math.abs(daysLeft)}d overdue`;
+};
+
+/** Build a single-field delivery address string from order fields */
+const buildDeliveryAddress = (ref: {
+  delivery_at?: string;
+  delivery_address?: string;
+  delivery_state?: string;
+  delivery_country?: string;
+  delivery_pincode?: string;
+  delivery_gst_no?: string;
+}): string => {
+  const lines: string[] = [];
+  if (ref.delivery_at?.trim())      lines.push(ref.delivery_at.trim());
+  if (ref.delivery_address?.trim()) lines.push(ref.delivery_address.trim());
+  const stateCountry = [ref.delivery_state, ref.delivery_country].filter(Boolean).join(', ');
+  if (stateCountry)                 lines.push(stateCountry);
+  if (ref.delivery_pincode?.trim()) lines.push(`PIN: ${ref.delivery_pincode.trim()}`);
+  if (ref.delivery_gst_no?.trim())  lines.push(`GST: ${ref.delivery_gst_no.trim()}`);
+  return lines.join('\n');
+};
+
 function calcStatus(total: number, delivered: number, cancelled: boolean): StatusType {
   if (cancelled) return 'Cancel';
   if (total <= 0) return 'Pending';
@@ -112,7 +215,6 @@ function calcStatus(total: number, delivered: number, cancelled: boolean): Statu
   return 'Pending';
 }
 
-// Get total meters from a CustomerOrderRef's items
 function extractTotalMeter(order: CustomerOrderRef): number {
   if (!order.items) return 0;
   let items: Array<{ meter: number }> = [];
@@ -166,13 +268,8 @@ const safeFetch = async (url: string, options?: RequestInit): Promise<Response |
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401 || res.status === 403) return null;
     if (res.status >= 500) {
-      try {
-        const errBody = await res.clone().json();
-        console.error(`[safeFetch] ${res.status} error from ${url}:`, errBody);
-      } catch {
-        const text = await res.clone().text();
-        console.error(`[safeFetch] ${res.status} error from ${url} (non-JSON body):`, text);
-      }
+      try { const e = await res.clone().json(); console.error(`[safeFetch] ${res.status}`, e); }
+      catch { console.error(`[safeFetch] ${res.status}`, await res.clone().text()); }
       return null;
     }
     return res;
@@ -181,31 +278,70 @@ const safeFetch = async (url: string, options?: RequestInit): Promise<Response |
 
 // ─── EMPTY HELPERS ────────────────────────────────────────────────────────────
 const emptyForm = (): OrderStatusRecord => ({
-  order_code: '', total_meter: 0, is_cancelled: 0, remarks: '', deliveries: [],
+  order_code: '', firm_name: '', total_meter: 0, is_cancelled: 0, remarks: '',
+  deliveries: [], expect_delivery: '', combined_delivery_address: '', quality: '',
 });
 
 const emptyLine = (): DeliveryLine => ({ delivery_date: today(), delivered_meter: 0, notes: '' });
+
+// ─── DELIVERY ENRICHMENT ──────────────────────────────────────────────────────
+// Fetches per-record detail (delivery dates, order date, expected delivery date
+// and delivery address fields) so the main list table can render them without
+// requiring the user to open the edit modal.
+async function enrichWithDeliveryDates(list: OrderStatusRecord[]): Promise<OrderStatusRecord[]> {
+  return Promise.all(list.map(async (r) => {
+    if (!r.id) return r;
+    // Already enriched (has delivery_dates array populated by a prior pass) — skip re-fetch.
+    if (Array.isArray(r.delivery_dates) && r.combined_delivery_address !== undefined) return r;
+    try {
+      const res = await safeFetch(`/api/order-status/${r.id}`);
+      if (!res || !res.ok) return r;
+      const data = await res.json();
+      const rec  = data.data || data;
+      const deliveries: DeliveryLine[] = Array.isArray(rec.deliveries) ? rec.deliveries : [];
+      const dates = deliveries.map(d => toISODate(d.delivery_date)).filter(Boolean).sort();
+      const addressSource = {
+        delivery_at:      rec.delivery_at,
+        delivery_address: rec.delivery_address,
+        delivery_state:   rec.delivery_state,
+        delivery_country: rec.delivery_country,
+        delivery_pincode: rec.delivery_pincode,
+        delivery_gst_no:  rec.delivery_gst_no,
+      };
+      return {
+        ...r,
+        delivery_count:     deliveries.length,
+        last_delivery_date: dates.length ? dates[dates.length - 1] : null,
+        delivery_dates:     dates,
+        expect_delivery:    rec.expect_delivery ? toISODate(rec.expect_delivery) : r.expect_delivery,
+        // ── NEW: order date + delivery address, sourced the same way the modal does ──
+        order_date:         rec.order_date ? toISODate(rec.order_date) : r.order_date,
+        quality:            rec.quality != null ? rec.quality : r.quality,
+        ...addressSource,
+        combined_delivery_address: buildDeliveryAddress(addressSource),
+      };
+    } catch { return r; }
+  }));
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════════════════
 export default function OrderStatusMaster({ user }: Props) {
 
-  // ── Master list ────────────────────────────────────────────────────────────
   const [records,      setRecords]      = useState<OrderStatusRecord[]>([]);
   const [tableLoading, setTableLoading] = useState(true);
   const [tableError,   setTableError]   = useState('');
   const [search,       setSearch]       = useState('');
   const [filterStatus, setFilterStatus] = useState<StatusType | ''>('');
+  const [filterFirm,   setFilterFirm]   = useState('');
   const [pageSize,     setPageSize]     = useState(10);
   const [currentPage,  setCurrentPage]  = useState(1);
 
-  // ── Order refs (to pick from existing orders) ──────────────────────────────
   const [orderRefs,    setOrderRefs]    = useState<CustomerOrderRef[]>([]);
   const [orderSearch,  setOrderSearch]  = useState('');
   const [ordersLoading,setOrdersLoading]= useState(false);
 
-  // ── Modal ─────────────────────────────────────────────────────────────────
   const [showModal,    setShowModal]    = useState(false);
   const [editId,       setEditId]       = useState<number | null>(null);
   const [form,         setForm]         = useState<OrderStatusRecord>(emptyForm());
@@ -213,17 +349,14 @@ export default function OrderStatusMaster({ user }: Props) {
   const [modalLoading, setModalLoading] = useState(false);
   const [formError,    setFormError]    = useState('');
 
-  // ── Delete ────────────────────────────────────────────────────────────────
   const [deleteTarget, setDeleteTarget] = useState<OrderStatusRecord | null>(null);
   const [deleting,     setDeleting]     = useState(false);
   const [deleteError,  setDeleteError]  = useState('');
 
-  // ── Export ────────────────────────────────────────────────────────────────
   const [exportOpen,   setExportOpen]   = useState(false);
   const [exporting,    setExporting]    = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
 
-  // ── Close export on outside click ─────────────────────────────────────────
   useEffect(() => {
     const h = (e: MouseEvent) => {
       if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false);
@@ -237,8 +370,10 @@ export default function OrderStatusMaster({ user }: Props) {
     (form.deliveries || []).reduce((s, d) => s + (Number(d.delivered_meter) || 0), 0),
     [form.deliveries]
   );
-  const pendingTotal   = Math.max(0, (form.total_meter || 0) - deliveredTotal);
-  const previewStatus  = calcStatus(form.total_meter || 0, deliveredTotal, form.is_cancelled === 1);
+  const pendingTotal  = Math.max(0, (form.total_meter || 0) - deliveredTotal);
+  // Over-delivery: delivered meters exceed the order's total meter.
+  const excessTotal   = Math.max(0, deliveredTotal - (form.total_meter || 0));
+  const previewStatus = calcStatus(form.total_meter || 0, deliveredTotal, form.is_cancelled === 1);
 
   // ─── Load records ────────────────────────────────────────────────────────
   const loadRecords = useCallback(async () => {
@@ -253,7 +388,9 @@ export default function OrderStatusMaster({ user }: Props) {
       if (!res) { setTableError('Authentication failed (401).'); return; }
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Failed to load records');
-      setRecords(Array.isArray(data.data || data) ? (data.data || data) : []);
+      const base = Array.isArray(data.data || data) ? (data.data || data) : [];
+      const enriched = await enrichWithDeliveryDates(base);
+      setRecords(enriched);
     } catch (e: any) { setTableError(e.message || 'Could not load records'); }
     finally { setTableLoading(false); }
   }, [user?.id, search, filterStatus]);
@@ -277,7 +414,7 @@ export default function OrderStatusMaster({ user }: Props) {
 
   useEffect(() => { loadRecords(); }, [loadRecords]);
   useEffect(() => { loadOrderRefs(); }, [loadOrderRefs]);
-  useEffect(() => { setCurrentPage(1); }, [search, filterStatus]);
+  useEffect(() => { setCurrentPage(1); }, [search, filterStatus, filterFirm]);
 
   // ─── Open modal ──────────────────────────────────────────────────────────
   const openModal = async (r?: OrderStatusRecord) => {
@@ -297,6 +434,20 @@ export default function OrderStatusMaster({ user }: Props) {
               delivered_meter: Number(d.delivered_meter) || 0,
               notes:           str(d.notes),
             })),
+            expect_delivery: rec.expect_delivery ? toISODate(rec.expect_delivery) : '',
+            order_date:      rec.order_date ? toISODate(rec.order_date) : '',
+            // ── Construction / quality (full description), sourced from the
+            //    linked order's `quality` column ──────────────────────────
+            quality:         rec.quality != null ? rec.quality : '',
+            // Rebuild combined address from the joined order fields returned by backend
+            combined_delivery_address: buildDeliveryAddress({
+              delivery_at:      rec.delivery_at,
+              delivery_address: rec.delivery_address,
+              delivery_state:   rec.delivery_state,
+              delivery_country: rec.delivery_country,
+              delivery_pincode: rec.delivery_pincode,
+              delivery_gst_no:  rec.delivery_gst_no,
+            }),
           });
         }
       } catch { setForm(r); }
@@ -316,17 +467,31 @@ export default function OrderStatusMaster({ user }: Props) {
   // ─── Order picker ────────────────────────────────────────────────────────
   const handleOrderSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const id = Number(e.target.value);
-    if (!id) { setForm(prev => ({ ...prev, order_booking_id: '', order_code: '', customer_name: '', total_meter: 0, deliveries: [] })); return; }
+    if (!id) {
+      setForm(prev => ({
+        ...prev,
+        order_booking_id: '', order_code: '', customer_name: '',
+        firm_name: '', total_meter: 0, deliveries: [],
+        expect_delivery: '', combined_delivery_address: '', order_date: '',
+        quality: '',
+      }));
+      return;
+    }
     const ref = orderRefs.find(o => o.id === id);
     if (!ref) return;
     const meters = extractTotalMeter(ref);
     setForm(prev => ({
       ...prev,
-      order_booking_id: ref.id,
-      order_code:       ref.order_code,
-      customer_name:    ref.customer_name,
-      total_meter:      meters || prev.total_meter,
-      deliveries:       prev.deliveries && prev.deliveries.length > 0 ? prev.deliveries : [emptyLine()],
+      order_booking_id:          ref.id,
+      order_code:                ref.order_code,
+      customer_name:             ref.customer_name,
+      firm_name:                 getOrderFirm(ref),
+      total_meter:               meters || prev.total_meter,
+      deliveries:                prev.deliveries && prev.deliveries.length > 0 ? prev.deliveries : [emptyLine()],
+      expect_delivery:           ref.expect_delivery ? toISODate(ref.expect_delivery) : '',
+      combined_delivery_address: buildDeliveryAddress(ref),
+      order_date:                ref.order_date ? toISODate(ref.order_date) : '',
+      quality:                   ref.quality != null ? ref.quality : '',
     }));
   };
 
@@ -354,19 +519,32 @@ export default function OrderStatusMaster({ user }: Props) {
 
     setFormError(''); setSaving(true);
     const payload = {
-      order_booking_id: form.order_booking_id || null,
-      order_code:       form.order_code,
-      customer_id:      form.customer_id || null,
-      total_meter:      Number(form.total_meter),
-      is_cancelled:     form.is_cancelled ? 1 : 0,
-      remarks:          form.remarks || null,
-      deliveries:       (form.deliveries || []).map(d => ({
-        id:              d.id,
-        delivery_date:   d.delivery_date,
-        delivered_meter: Number(d.delivered_meter) || 0,
-        notes:           d.notes || '',
-      })),
-    };
+  order_booking_id: form.order_booking_id || null,
+  order_code:       form.order_code,
+  customer_id:      form.customer_id || null,
+  firm_name:        form.firm_name || null,
+  total_meter:      Number(form.total_meter),
+  is_cancelled:     form.is_cancelled ? 1 : 0,
+  remarks:          form.remarks || null,
+  // ── NEW: snapshot these into order_status_master so Construction /
+  //         delivery schedule survive reload and don't depend on a live
+  //         JOIN to order_bookings ─────────────────────────────────────
+  quality:            form.quality || null,
+  order_date:         form.order_date || null,
+  expect_delivery:    form.expect_delivery || null,
+  delivery_at:        form.delivery_at || null,
+  delivery_address:   form.delivery_address || null,
+  delivery_state:     form.delivery_state || null,
+  delivery_country:   form.delivery_country || null,
+  delivery_pincode:   form.delivery_pincode || null,
+  delivery_gst_no:    form.delivery_gst_no || null,
+  deliveries:       (form.deliveries || []).map(d => ({
+    id:              d.id,
+    delivery_date:   d.delivery_date,
+    delivered_meter: Number(d.delivered_meter) || 0,
+    notes:           d.notes || '',
+  })),
+};
 
     try {
       const url    = editId ? `/api/order-status/${editId}` : '/api/order-status';
@@ -403,22 +581,34 @@ export default function OrderStatusMaster({ user }: Props) {
     const res = await safeFetch(`/api/order-status?${qs}`);
     if (!res) return [];
     const data = await res.json();
-    return Array.isArray(data.data || data) ? (data.data || data) : [];
+    const base = Array.isArray(data.data || data) ? (data.data || data) : [];
+    return enrichWithDeliveryDates(base);
   };
 
   const buildRows = (data: OrderStatusRecord[]) =>
-    data.map((r, i) => ({
-      '#':                i + 1,
-      'Order Code':       r.order_code,
-      'Customer':         r.customer_name || '',
-      'PO No':            r.po_no || '',
-      'Total Meter':      Number(r.total_meter || 0).toFixed(2),
-      'Delivered Meter':  Number(r.delivered_meter || 0).toFixed(2),
-      'Pending Meter':    Number(r.pending_meter || 0).toFixed(2),
-      'Status':           r.status || '',
-      'Transport':        r.transport || '',
-      'Remarks':          r.remarks || '',
-    }));
+    data.map((r, i) => {
+      return {
+        '#':                  i + 1,
+        'Order Code':         r.order_code,
+        'Customer':           r.customer_name || '',
+        'Firm':               r.firm_name || '',
+        'PO No':              r.po_no || '',
+        'Order Date':         r.order_date ? fmtDate(r.order_date) : '',
+        'Construction':       r.quality || '',
+        'Expected Delivery':  r.expect_delivery ? fmtDate(r.expect_delivery) : '',
+        'Countdown':          countdownText(r),
+        'Delivery Address':   r.combined_delivery_address ? r.combined_delivery_address.replace(/\n/g, ', ') : '',
+        'Total Meter':        Number(r.total_meter || 0).toFixed(2),
+        'Delivered Meter':    Number(r.delivered_meter || 0).toFixed(2),
+        'Pending Meter':      Number(r.pending_meter || 0).toFixed(2),
+        'Delivery Dates':     (r.delivery_dates && r.delivery_dates.length)
+                                 ? r.delivery_dates.map(fmtDate).join(', ')
+                                 : (r.last_delivery_date ? fmtDate(r.last_delivery_date) : ''),
+        'Status':             r.status || '',
+        'Transport':          r.transport || '',
+        'Remarks':            r.remarks || '',
+      };
+    });
 
   const esc = (v: any): string => {
     const s = String(v ?? '');
@@ -455,17 +645,25 @@ export default function OrderStatusMaster({ user }: Props) {
     const rows = buildRows(await fetchAllForExport());
     if (!rows.length) { setExporting(false); return; }
     const h   = Object.keys(rows[0]);
-    const win = window.open('', '_blank', 'width=1100,height=700');
+    const win = window.open('', '_blank', 'width=1200,height=700');
     if (!win) { setExporting(false); return; }
     win.document.write(`<html><head><title>Order Status</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#1a2332}h2{margin:0 0 4px;font-size:18px}p{margin:0 0 16px;color:#64748b;font-size:12px}table{width:100%;border-collapse:collapse;font-size:11.5px}th,td{border:1px solid #cbd5e1;padding:6px 10px;text-align:left}th{background:#1a56db;color:#fff}tr:nth-child(even) td{background:#eff6ff}</style></head><body><h2>Order Status Report</h2><p>${rows.length} records · ${new Date().toLocaleString('en-IN')}</p><table><thead><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${h.map(k=>`<td>${(r as any)[k]??''}</td>`).join('')}</tr>`).join('')}</tbody></table><script>window.onload=function(){window.print();}<\/script></body></html>`);
     win.document.close(); setExporting(false);
   };
 
+  // ─── Unique firm list (derived from loaded records) for the Firm filter ──
+  const uniqueFirms = useMemo(() => {
+    const set = new Set<string>();
+    records.forEach(r => { if (r.firm_name && r.firm_name.trim()) set.add(r.firm_name.trim()); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [records]);
+
   // ─── Pagination ──────────────────────────────────────────────────────────
   const filtered   = records.filter(r =>
-    [r.order_code, r.customer_name, r.po_no, r.status, r.transport].some(v =>
+    [r.order_code, r.customer_name, r.firm_name, r.po_no, r.status, r.transport].some(v =>
       (v || '').toLowerCase().includes(search.toLowerCase())
     ) && (!filterStatus || r.status === filterStatus)
+      && (!filterFirm || r.firm_name === filterFirm)
   );
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paginated  = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -478,8 +676,201 @@ export default function OrderStatusMaster({ user }: Props) {
 
   const filteredOrderRefs = orderRefs.filter(o =>
     o.order_code.toLowerCase().includes(orderSearch.toLowerCase()) ||
-    (o.customer_name || '').toLowerCase().includes(orderSearch.toLowerCase())
+    (o.customer_name || '').toLowerCase().includes(orderSearch.toLowerCase()) ||
+    getOrderFirm(o).toLowerCase().includes(orderSearch.toLowerCase())
   );
+
+  // ─── Countdown badge helper (Order Date → Expected Completion Date) ─────
+  // Shows how many days remain until the expected completion date (or how
+  // many days overdue it is), same logic used in the modal's Countdown row.
+  const renderCountdownBadge = (r: OrderStatusRecord) => {
+    if (!r.expect_delivery) return <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>;
+    if (r.status === 'Cancel') {
+      return (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: '#f1f5f9', color: '#64748b', border: '1px solid #cbd5e1',
+          borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+        }}>
+          — N/A
+        </span>
+      );
+    }
+    if (r.status === 'Completed') {
+      const actualDate = r.last_delivery_date || null;
+      const diff = actualDate ? calcDaysVariance(actualDate, r.expect_delivery) : null;
+      if (diff === null) {
+        return (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: '#f0fdf4', color: '#15803d', border: '1px solid #86efac',
+            borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+          }}>
+            ✓ Completed
+          </span>
+        );
+      }
+      if (diff > 0) return (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+          borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+        }}>
+          Finished −{diff}d late
+        </span>
+      );
+      return (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: '#f0fdf4', color: '#15803d', border: '1px solid #86efac',
+          borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+        }}>
+          {diff === 0 ? '✓ Finished on time' : `✓ Finished +${Math.abs(diff)}d early`}
+        </span>
+      );
+    }
+    // Pending / In Process / Part Delivery — count down from today to expected completion
+    const diffToday = calcDaysVariance(today(), r.expect_delivery);
+    if (diffToday === null) return <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>;
+    const daysLeft = -diffToday;
+    if (daysLeft > 0) return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        background: '#f0fdf4', color: '#15803d', border: '1px solid #86efac',
+        borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+      }}>
+        {daysLeft}d left
+      </span>
+    );
+    if (daysLeft === 0) return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        background: '#fefce8', color: '#a16207', border: '1px solid #fde047',
+        borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+      }}>
+        ⚡ Due today
+      </span>
+    );
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+        borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+      }}>
+        ⚠ {Math.abs(daysLeft)}d overdue
+      </span>
+    );
+  };
+
+  // ─── Delay badge helper for main table ──────────────────────────────────
+  const renderDelayBadge = (r: OrderStatusRecord) => {
+    if (!r.expect_delivery || r.status === 'Cancel') return null;
+    const compareDate = r.last_delivery_date || (r.status === 'Completed' ? r.last_delivery_date : null);
+    if (!compareDate && r.status !== 'Completed') {
+      // Order not yet delivered — compare today vs expected
+      const todayISO = today();
+      const diff = calcDaysVariance(todayISO, r.expect_delivery);
+      if (diff === null || diff <= 0) return null; // not yet overdue
+      return (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 3,
+          background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+          borderRadius: 20, padding: '1px 7px', fontSize: 10.5, fontWeight: 700,
+          marginTop: 3, whiteSpace: 'nowrap',
+        }}>
+          ⚠ {diff}d overdue
+        </span>
+      );
+    }
+    if (!compareDate) return null;
+    const diff = calcDaysVariance(compareDate, r.expect_delivery);
+    if (diff === null) return null;
+    if (diff > 0) return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+        borderRadius: 20, padding: '1px 7px', fontSize: 10.5, fontWeight: 700,
+        marginTop: 3, whiteSpace: 'nowrap',
+      }}>
+        −{diff}d late
+      </span>
+    );
+    return null;
+  };
+
+  // ─── Delivery Timeline Analysis (modal) ──────────────────────────────────
+  const renderTimelineTable = () => {
+    const deliveries = form.deliveries || [];
+    if (!deliveries.length) return null;
+    const hasExpected = !!form.expect_delivery;
+
+    // ── Actual completion vs expected: jumps straight to the real
+    //    completion date instead of any single delivery line.
+    //    - If the order is fully delivered (delivered >= total): use the
+    //      LAST delivery date as the "actual completion date".
+    //    - Otherwise: use the latest delivery so far, labelled as
+    //      "in-progress" rather than "completed".
+    const withDates      = deliveries.filter(d => !!d.delivery_date);
+    const sortedDates     = withDates.map(d => d.delivery_date).slice().sort();
+    const latestDate      = sortedDates.length ? sortedDates[sortedDates.length - 1] : null;
+    const isFullyDelivered = (form.total_meter || 0) > 0 && deliveredTotal >= (form.total_meter || 0);
+    const completionDiff  = (hasExpected && latestDate) ? calcDaysVariance(latestDate, form.expect_delivery!) : null;
+
+    if (!hasExpected) return null;
+
+    return (
+      <div className="osm-del-wrap" style={{ marginBottom: 14 }}>
+        <table className="osm-del-table">
+          <thead>
+            <tr>
+              <th className="osm-dth">Delivery Line</th>
+              <th className="osm-dth">Date</th>
+              <th className="osm-dthr">Meter</th>
+              <th className="osm-dth">Variance vs Expected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {withDates.map((d, idx) => {
+              const diff = calcDaysVariance(d.delivery_date, form.expect_delivery!);
+              const td = idx % 2 === 0 ? 'osm-dtde' : 'osm-dtdo';
+              return (
+                <tr key={idx}>
+                  <td className={td}>#{idx + 1}</td>
+                  <td className={td}>{fmtDate(d.delivery_date)}</td>
+                  <td className={td} style={{ textAlign: 'right', fontFamily: "'JetBrains Mono',monospace" }}>{fmt2(d.delivered_meter)} m</td>
+                  <td className={td}>
+                    {diff === null ? '—' : diff > 0 ? (
+                      <span style={{ color: '#dc2626', fontWeight: 700 }}>−{diff}d late</span>
+                    ) : diff === 0 ? (
+                      <span style={{ color: '#15803d', fontWeight: 700 }}>On time</span>
+                    ) : (
+                      <span style={{ color: '#15803d', fontWeight: 700 }}>+{Math.abs(diff)}d early</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {latestDate && (
+              <tr className="osm-del-total-row">
+                <td colSpan={3} style={{ padding: '8px 10px', fontWeight: 700, fontSize: 12, color: '#475569' }}>
+                  {isFullyDelivered ? 'Actual Completion vs Expected' : 'Latest Progress vs Expected'}
+                </td>
+                <td style={{ padding: '8px 10px' }}>
+                  {completionDiff === null ? '—' : completionDiff > 0 ? (
+                    <span style={{ color: '#dc2626', fontWeight: 800 }}>−{completionDiff}d late</span>
+                  ) : completionDiff === 0 ? (
+                    <span style={{ color: '#15803d', fontWeight: 800 }}>On time</span>
+                  ) : (
+                    <span style={{ color: '#15803d', fontWeight: 800 }}>+{Math.abs(completionDiff)}d early</span>
+                  )}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -509,7 +900,7 @@ export default function OrderStatusMaster({ user }: Props) {
         /* CARD / TABLE */
         .osm-card{margin:0 28px 28px;background:#fff;border-radius:14px;border:1px solid #e2e8f0;box-shadow:0 2px 12px rgba(0,0,0,.07);overflow:hidden}
         .osm-table-wrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:#c7d3e8 transparent}
-        .osm-table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}
+        .osm-table{width:100%;border-collapse:collapse;font-size:13px;min-width:1780px}
         .osm-table thead tr{background:linear-gradient(135deg,#1a56db 0%,#2563eb 100%)}
         .osm-table th{padding:12px 16px;color:#fff;font-weight:600;text-align:left;white-space:nowrap;font-size:12px;letter-spacing:.03em;text-transform:uppercase;border-right:1px solid rgba(255,255,255,.08)}
         .osm-table th:last-child{border-right:none}
@@ -520,6 +911,7 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-table td{padding:10px 16px;color:#374151;white-space:nowrap;font-size:13px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
         .osm-table tbody tr:last-child td{border-bottom:none}
         .osm-code{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:#1a56db;background:#eff6ff;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px;display:inline-block}
+        .osm-firm-badge{font-size:11.5px;font-weight:700;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:5px;padding:2px 8px;display:inline-block}
         .osm-serial{color:#94a3b8;font-size:12px}
         .osm-acts{display:flex;align-items:center;gap:6px;justify-content:center}
         .osm-edit-btn{display:inline-flex;align-items:center;gap:5px;background:#eff6ff;color:#1a56db;border:1px solid #bfdbfe;padding:5px 11px;border-radius:7px;font-size:11.5px;font-weight:600;cursor:pointer;transition:background .12s;font-family:inherit;white-space:nowrap}
@@ -527,14 +919,27 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-del-btn{display:inline-flex;align-items:center;gap:5px;background:#fff1f2;color:#dc2626;border:1px solid #fca5a5;padding:5px 11px;border-radius:7px;font-size:11.5px;font-weight:600;cursor:pointer;transition:background .12s;font-family:inherit;white-space:nowrap}
         .osm-del-btn:hover{background:#fee2e2;border-color:#f87171}
         .osm-empty{text-align:center;padding:52px 16px;color:#94a3b8;font-size:13px}
-        .osm-table-err{text-align:center;padding:32px 16px;font-size:13px;color:#b91c1c;background:#fff1f2}
         /* STATUS BADGE */
         .osm-status-badge{display:inline-flex;align-items:center;gap:5px;border-radius:20px;padding:3px 10px;font-size:11.5px;font-weight:700;white-space:nowrap;border-width:1px;border-style:solid}
+        /* STATUS CELL with delay */
+        .osm-status-cell{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+        /* EXPECTED DATE CELL */
+        .osm-exp-date{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:5px;padding:2px 7px;white-space:nowrap}
+        /* ORDER DATE CELL */
+        .osm-order-date{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;border-radius:5px;padding:2px 7px;white-space:nowrap}
+        /* DELIVERY ADDRESS CELL — truncated with tooltip showing full text */
+        .osm-addr-cell{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#374151;cursor:default}
+        /* CONSTRUCTION / QUALITY CELL — truncated with tooltip showing full text */
+        .osm-quality-cell{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#475569;font-size:12px;vertical-align:middle;cursor:default}
         /* PROGRESS BAR */
         .osm-progress-wrap{min-width:120px}
         .osm-progress-bg{height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-bottom:3px}
         .osm-progress-fill{height:100%;border-radius:99px;transition:width .3s}
         .osm-progress-label{font-size:10.5px;color:#64748b;white-space:nowrap}
+        /* DELIVERY DATES CELL — compact: latest date + term-count badge, full history on hover */
+        .osm-deldates{display:flex;align-items:center;gap:6px;white-space:nowrap;max-width:220px;cursor:default}
+        .osm-deldates-latest{display:inline-flex;align-items:center;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;border-radius:5px;padding:2px 7px;white-space:nowrap}
+        .osm-deldates-badge{font-size:10.5px;font-weight:700;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:20px;padding:2px 8px;white-space:nowrap;flex-shrink:0}
         /* PAGINATION */
         .osm-pag{display:flex;align-items:center;justify-content:space-between;padding:11px 20px;border-top:1px solid #edf0f5;background:#f8fafc;font-size:12.5px;color:#64748b;flex-wrap:wrap;gap:10px}
         .osm-pag-btns{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
@@ -562,7 +967,7 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-export-item-icon.print{background:#eff6ff;color:#1a56db}
         /* MODAL */
         .osm-overlay{position:fixed;inset:0;z-index:900;background:rgba(10,20,40,.5);display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow-y:auto}
-        .osm-modal{width:100%;max-width:780px;background:#fff;border-radius:18px;box-shadow:0 12px 48px rgba(0,0,0,.22);overflow:hidden;margin:auto;animation:slideUp .22s ease;position:relative}
+        .osm-modal{width:100%;max-width:820px;background:#fff;border-radius:18px;box-shadow:0 12px 48px rgba(0,0,0,.22);overflow:hidden;margin:auto;animation:slideUp .22s ease;position:relative}
         @keyframes slideUp{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:translateY(0)}}
         .osm-mhead{display:flex;align-items:center;justify-content:space-between;padding:16px 26px;background:linear-gradient(135deg,#1a56db 0%,#3b5bfc 100%)}
         .osm-mhead-left{display:flex;align-items:center;gap:10px}
@@ -580,12 +985,18 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-req{color:#dc2626}
         .osm-input,.osm-select,.osm-textarea{width:100%;padding:8px 12px;border:1px solid #d1d9e6;border-radius:8px;font-size:13px;font-family:inherit;color:#1a2332;background:#fff;outline:none;transition:border .15s,box-shadow .15s}
         .osm-input:focus,.osm-select:focus,.osm-textarea:focus{border-color:#1a56db;box-shadow:0 0 0 3px rgba(26,86,219,.1)}
+        .osm-input[readonly]{background:#f8fafc;color:#475569;cursor:not-allowed}
         .osm-textarea{min-height:64px;resize:vertical}
+        .osm-textarea[readonly]{background:#f8fafc;color:#374151;cursor:not-allowed;min-height:100px;line-height:1.6}
         .osm-r2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
         .osm-r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
         .osm-section{background:#f8fafc;border:1px solid #e8edf4;border-radius:11px;padding:15px;margin-bottom:14px}
         .osm-section-title{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#64748b;margin-bottom:12px;display:flex;align-items:center;gap:7px}
         .osm-section-title::after{content:'';flex:1;height:1px;background:#e2e8f0}
+        /* DELIVERY INFO SECTION */
+        .osm-delivinfo-section{background:#f5f3ff;border:1px solid #ddd6fe;border-radius:11px;padding:15px;margin-bottom:14px}
+        .osm-delivinfo-title{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#7c3aed;margin-bottom:12px;display:flex;align-items:center;gap:7px}
+        .osm-delivinfo-title::after{content:'';flex:1;height:1px;background:#ddd6fe}
         /* STATUS PREVIEW STRIP */
         .osm-preview-strip{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:10px;margin-bottom:14px;border:1.5px solid #e2e8f0;background:#f8fafc;flex-wrap:wrap}
         .osm-meter-summary{display:flex;gap:16px;flex-wrap:wrap}
@@ -595,7 +1006,7 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-divider{width:1px;background:#e2e8f0;align-self:stretch}
         /* DELIVERY TABLE */
         .osm-del-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-        .osm-del-sec-title{font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.06em}
+        .osm-del-sec-title{font-size:11px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center}
         .osm-add-row-btn{display:flex;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;padding:5px 12px;background:#f0fdf4;color:#0f766e;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;transition:background .12s}
         .osm-add-row-btn:hover{background:#ccfbf1}
         .osm-del-wrap{border:1px solid #e2e8f0;border-radius:10px;overflow-x:auto;margin-bottom:14px}
@@ -647,7 +1058,6 @@ export default function OrderStatusMaster({ user }: Props) {
             <div className="osm-page-sub">Track delivery milestones &amp; order fulfilment progress</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {/* Export dropdown */}
             <div className="osm-export-wrap" ref={exportRef}>
               <button
                 type="button"
@@ -697,7 +1107,7 @@ export default function OrderStatusMaster({ user }: Props) {
             <FiSearch className="osm-search-icon" size={13} />
             <input
               className="osm-search"
-              placeholder="Search by order code, customer…"
+              placeholder="Search by order code, customer, firm…"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
@@ -710,6 +1120,16 @@ export default function OrderStatusMaster({ user }: Props) {
             <option value="">All Statuses</option>
             {(['Pending','In Process','Part Delivery','Completed','Cancel'] as StatusType[]).map(s =>
               <option key={s} value={s}>{s}</option>
+            )}
+          </select>
+          <select
+            className="osm-filter-sel"
+            value={filterFirm}
+            onChange={e => setFilterFirm(e.target.value)}
+          >
+            <option value="">All Firms</option>
+            {uniqueFirms.map(f =>
+              <option key={f} value={f}>{f}</option>
             )}
           </select>
           <span className="osm-rec-count">{filtered.length} record{filtered.length !== 1 ? 's' : ''}</span>
@@ -730,22 +1150,28 @@ export default function OrderStatusMaster({ user }: Props) {
                 <tr>
                   <th style={{ width: 40 }}>#</th>
                   <th>Order Code</th>
+                  <th>Order Date</th>
                   <th>Customer</th>
+                  <th>Firm</th>
                   <th>PO No</th>
+                  <th>Construction</th>
+                  <th>Expected Delivery</th>
+                  <th>Delivery ETA</th>
                   <th>Total Meter</th>
                   <th>Progress</th>
                   <th>Pending</th>
                   <th>Status</th>
-                  <th>Deliveries</th>
+                  <th>Delivery Dates</th>
+                   <th>Delivery Address</th>
                   <th className="tc" style={{ width: 140 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {tableLoading ? (
-                  <tr><td colSpan={10} className="osm-empty"><span className="osm-spin" />Loading…</td></tr>
+                  <tr><td colSpan={16} className="osm-empty"><span className="osm-spin" />Loading…</td></tr>
                 ) : tableError ? (
                   <tr>
-                    <td colSpan={10} style={{ textAlign: 'center', padding: '32px 16px', color: '#b91c1c', background: '#fff1f2' }}>
+                    <td colSpan={16} style={{ textAlign: 'center', padding: '32px 16px', color: '#b91c1c', background: '#fff1f2' }}>
                       <FiAlertTriangle size={14} style={{ marginRight: 6 }} />{tableError}
                       <div style={{ marginTop: 8 }}>
                         <button style={{ color: '#1a56db', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={loadRecords}>
@@ -755,19 +1181,50 @@ export default function OrderStatusMaster({ user }: Props) {
                     </td>
                   </tr>
                 ) : paginated.length === 0 ? (
-                  <tr><td colSpan={10} className="osm-empty">{search || filterStatus ? 'No records match your filter.' : 'No order statuses yet. Click "New Order Status" to create one.'}</td></tr>
+                  <tr><td colSpan={16} className="osm-empty">{search || filterStatus || filterFirm ? 'No records match your filter.' : 'No order statuses yet. Click "New Order Status" to create one.'}</td></tr>
                 ) : paginated.map((r, i) => {
                   const total     = Number(r.total_meter || 0);
                   const delivered = Number(r.delivered_meter || 0);
                   const pct       = total > 0 ? Math.min(100, (delivered / total) * 100) : 0;
                   const sc        = STATUS_COLORS[r.status as StatusType] || STATUS_COLORS['Pending'];
                   const fillColor = r.status === 'Completed' ? '#16a34a' : r.status === 'Cancel' ? '#dc2626' : r.status === 'Part Delivery' ? '#ea580c' : '#1a56db';
+                  const delCount  = r.delivery_count ?? (r.delivery_dates ? r.delivery_dates.length : 0);
+                  const addrLines = r.combined_delivery_address ? r.combined_delivery_address.split('\n') : [];
                   return (
                     <tr key={r.id}>
                       <td><span className="osm-serial">{(currentPage - 1) * pageSize + i + 1}</span></td>
+                      
                       <td><span className="osm-code">{r.order_code}</span></td>
+                        {/* ── NEW: Order Date ── */}
+                      <td>
+                        {r.order_date
+                          ? <span className="osm-order-date"><FiCalendar size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />{fmtDate(r.order_date)}</span>
+                          : <span style={{ color: '#94a3b8' }}>—</span>}
+                      </td>
                       <td style={{ fontWeight: 600, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.customer_name || '—'}</td>
+                      
+                      <td>
+                        {r.firm_name
+                          ? <span className="osm-firm-badge">{r.firm_name}</span>
+                          : <span style={{ color: '#94a3b8' }}>—</span>}
+                      </td>
                       <td style={{ fontFamily: 'JetBrains Mono,monospace', fontSize: 12 }}>{r.po_no || '—'}</td>
+                    
+                      {/* ── NEW: Construction / Quality (full description), sourced from linked order ── */}
+                      <td style={{ whiteSpace: 'normal' }}>
+                        {r.quality
+                          ? <span className="osm-quality-cell" title={r.quality}>{r.quality}</span>
+                          : <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>}
+                      </td>
+                      {/* ── Expected Delivery Date ── */}
+                      <td>
+                        {r.expect_delivery
+                          ? <span className="osm-exp-date"><FiCalendar size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />{fmtDate(r.expect_delivery)}</span>
+                          : <span style={{ color: '#94a3b8' }}>—</span>}
+                      </td>
+                      {/* ── NEW: Countdown (Order Date → Expected Completion) ── */}
+                      <td>{renderCountdownBadge(r)}</td>
+                     
                       <td style={{ fontFamily: 'JetBrains Mono,monospace', fontWeight: 700 }}>{fmt2(total)} m</td>
                       <td>
                         <div className="osm-progress-wrap">
@@ -777,16 +1234,81 @@ export default function OrderStatusMaster({ user }: Props) {
                           <div className="osm-progress-label">{fmt2(delivered)} / {fmt2(total)} m ({pct.toFixed(0)}%)</div>
                         </div>
                       </td>
-                      <td style={{ fontFamily: 'JetBrains Mono,monospace', color: '#c2410c', fontWeight: 700 }}>{fmt2(Math.max(0, total - delivered))} m</td>
                       <td>
-                        <span className="osm-status-badge" style={{ background: sc.bg, color: sc.color, borderColor: sc.border }}>
-                          {r.status === 'Completed' && <FiCheck size={11} />}
-                          {r.status === 'Cancel'    && <FiXCircle size={11} />}
-                          {r.status === 'Part Delivery' && <FiTruck size={11} />}
-                          {r.status}
-                        </span>
+                        {delivered > total ? (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+                            borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+                          }} title={`Delivered ${fmt2(delivered)} m against an order total of ${fmt2(total)} m`}>
+                            ⚠ +{fmt2(delivered - total)}m over
+                          </span>
+                        ) : (
+                          <span style={{ fontFamily: 'JetBrains Mono,monospace', color: '#c2410c', fontWeight: 700 }}>{fmt2(Math.max(0, total - delivered))} m</span>
+                        )}
                       </td>
-                      <td style={{ fontSize: 12 }}>{(r as any).delivery_count ?? 0} term{((r as any).delivery_count ?? 0) !== 1 ? 's' : ''}</td>
+                      {/* ── Status + delay badge ── */}
+                      <td>
+                        <div className="osm-status-cell">
+                          <span className="osm-status-badge" style={{ background: sc.bg, color: sc.color, borderColor: sc.border }}>
+                            {r.status === 'Completed' && <FiCheck size={11} />}
+                            {r.status === 'Cancel'    && <FiXCircle size={11} />}
+                            {r.status === 'Part Delivery' && <FiTruck size={11} />}
+                            {r.status}
+                          </span>
+                          {renderDelayBadge(r)}
+                        </div>
+                      </td>
+                      {/* ── Delivery Dates: compact — latest date + term-count badge, full
+                           chronological history available via hover tooltip. Keeps every
+                           row a uniform height instead of growing with delivery count. ── */}
+                      <td>
+                        {r.delivery_dates && r.delivery_dates.length > 0 ? (
+                          <div
+                            className="osm-deldates"
+                            title={r.delivery_dates.map((dt, di) => `${di + 1}. ${fmtDate(dt)}`).join('\n')}
+                          >
+                            <span className="osm-deldates-latest">
+                              <FiCalendar size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                              {fmtDate(r.delivery_dates[r.delivery_dates.length - 1])}
+                            </span>
+                            {delCount > 1 && (
+                              <span className="osm-deldates-badge">{delCount} terms</span>
+                            )}
+                          </div>
+                        ) : r.last_delivery_date ? (
+                          // Fallback: dates array wasn't populated but we do have a last
+                          // delivery date on record — show it instead of a bare count,
+                          // so the table matches what the export already displays.
+                          <div className="osm-deldates">
+                            <span className="osm-deldates-latest">
+                              <FiCalendar size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                              {fmtDate(r.last_delivery_date)}
+                            </span>
+                            {delCount > 1 && (
+                              <span className="osm-deldates-badge">{delCount} terms</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                            {delCount > 0 ? `${delCount} term${delCount !== 1 ? 's' : ''}` : '—'}
+                          </span>
+                        )}
+                      </td>
+                       {/* ── NEW: Delivery Address (truncated, full text on hover) ── */}
+                      <td style={{ whiteSpace: 'normal' }}>
+                        {addrLines.length > 0 ? (
+                          <div className="osm-addr-cell" title={addrLines.join(', ')}>
+                            <FiMapPin size={10} style={{ marginRight: 4, verticalAlign: 'middle', color: '#94a3b8', flexShrink: 0 }} />
+                            {addrLines[0]}
+                            {addrLines.length > 1 && (
+                              <span style={{ color: '#94a3b8', fontSize: 10.5 }}> +{addrLines.length - 1} more</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ color: '#94a3b8' }}>—</span>
+                        )}
+                      </td>
                       <td>
                         <div className="osm-acts">
                           <button className="osm-edit-btn" onClick={() => openModal(r)}><FiEdit2 size={12} /> Edit</button>
@@ -845,7 +1367,7 @@ export default function OrderStatusMaster({ user }: Props) {
                         <label className="osm-label">Search Orders</label>
                         <input
                           className="osm-input"
-                          placeholder="Search order code or customer…"
+                          placeholder="Search order code, customer or firm…"
                           value={orderSearch}
                           onChange={e => setOrderSearch(e.target.value)}
                         />
@@ -864,22 +1386,116 @@ export default function OrderStatusMaster({ user }: Props) {
                           <option value="">— Choose an order —</option>
                           {filteredOrderRefs.map(o => (
                             <option key={o.id} value={o.id}>
-                              [{o.order_code}] {o.customer_name}
+                              [{o.order_code}] {o.customer_name}{getOrderFirm(o) ? ` · ${getOrderFirm(o)}` : ''}
                             </option>
                           ))}
                         </select>
                       </div>
                     </div>
                     {form.order_code && (
-                      <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <FiCheck size={12} />
                         <strong>{form.order_code}</strong>
                         {form.customer_name && <> · {form.customer_name}</>}
+                        {form.firm_name && (
+                          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, background: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe', borderRadius: 20, padding: '2px 10px', fontWeight: 700, fontSize: 11.5 }}>
+                            <FiBriefcase size={11} /> {form.firm_name}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
 
-                  {/* ── Order Code (manual) + Total Meter ───────────── */}
+                  {/* ── NEW: Delivery Info (auto-filled from order) — TABLE format ── */}
+                  {(form.combined_delivery_address || form.expect_delivery || form.order_date || form.quality) && (() => {
+                    const diff      = form.expect_delivery ? calcDaysVariance(today(), form.expect_delivery) : null;
+                    const daysLeft  = diff === null ? null : -diff; // positive = days remaining
+                    return (
+                      <div className="osm-delivinfo-section">
+                        <div className="osm-delivinfo-title"><FiMapPin size={12} /> Delivery &amp; Schedule Info</div>
+                        <div className="osm-del-wrap" style={{ marginBottom: 0 }}>
+                          <table className="osm-del-table">
+                            <tbody>
+                              <tr>
+                                <th className="osm-dth" style={{ width: 170, verticalAlign: 'top' }}>
+                                  Order Date <span style={{ color: '#94a3b8', fontWeight: 400, textTransform: 'none' }}>(from order)</span>
+                                </th>
+                                <td className="osm-dtde" style={{ fontFamily: 'JetBrains Mono,monospace', fontWeight: 700, fontSize: 13, color: '#1a2332' }}>
+                                  {form.order_date
+                                    ? fmtDate(form.order_date)
+                                    : <span style={{ color: '#94a3b8', fontWeight: 400, fontFamily: 'inherit', fontSize: 13 }}>Not specified on this order</span>}
+                                </td>
+                              </tr>
+                              <tr>
+                                <th className="osm-dth" style={{ width: 170, verticalAlign: 'top' }}>
+                                  Construction <span style={{ color: '#94a3b8', fontWeight: 400, textTransform: 'none' }}>(quality, from order)</span>
+                                </th>
+                                <td className="osm-dtde" style={{ fontSize: 13, color: '#1a2332', whiteSpace: 'pre-line', lineHeight: 1.6 }}>
+                                  {form.quality && form.quality.trim()
+                                    ? form.quality
+                                    : <span style={{ color: '#94a3b8' }}>Not specified on this order</span>}
+                                </td>
+                              </tr>
+                              <tr>
+                                <th className="osm-dth" style={{ verticalAlign: 'top' }}>
+                                  Expected Completion Date <span style={{ color: '#94a3b8', fontWeight: 400, textTransform: 'none' }}>(from order)</span>
+                                </th>
+                                <td className="osm-dtde" style={{ fontFamily: 'JetBrains Mono,monospace', fontWeight: 800, fontSize: 14, color: '#7c3aed' }}>
+                                  {form.expect_delivery
+                                    ? fmtDate(form.expect_delivery)
+                                    : <span style={{ color: '#94a3b8', fontWeight: 400, fontFamily: 'inherit', fontSize: 13 }}>Not specified on this order</span>}
+                                </td>
+                              </tr>
+                              <tr>
+                                <th className="osm-dth" style={{ width: 170, verticalAlign: 'top' }}>
+                                  Delivery Address <span style={{ color: '#94a3b8', fontWeight: 400, textTransform: 'none' }}>(from order)</span>
+                                </th>
+                                <td className="osm-dtde" style={{ whiteSpace: 'pre-line', lineHeight: 1.6, color: '#374151' }}>
+                                  {form.combined_delivery_address
+                                    ? form.combined_delivery_address
+                                    : <span style={{ color: '#94a3b8' }}>No delivery address on this order</span>}
+                                </td>
+                              </tr>
+                              {form.expect_delivery && daysLeft !== null && (
+                                <tr>
+                                  <th className="osm-dth" style={{ verticalAlign: 'top' }}>Countdown</th>
+                                  <td className="osm-dtde">
+                                    {daysLeft > 0 ? (
+                                      <span style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                                        background: '#f0fdf4', color: '#15803d', border: '1px solid #86efac',
+                                        borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 700,
+                                      }}>
+                                        {daysLeft} day{daysLeft !== 1 ? 's' : ''} remaining until expected delivery
+                                      </span>
+                                    ) : daysLeft === 0 ? (
+                                      <span style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                                        background: '#fefce8', color: '#a16207', border: '1px solid #fde047',
+                                        borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 700,
+                                      }}>
+                                        ⚡ Expected delivery is today
+                                      </span>
+                                    ) : (
+                                      <span style={{
+                                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                                        background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+                                        borderRadius: 20, padding: '3px 12px', fontSize: 12, fontWeight: 700,
+                                      }}>
+                                        −{Math.abs(daysLeft)} day{Math.abs(daysLeft) !== 1 ? 's' : ''} past expected date
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── Order Code + Firm + Total Meter ─────────────── */}
                   <div className="osm-section">
                     <div className="osm-section-title"><FiCalendar size={12} /> Order Details</div>
                     <div className="osm-r2">
@@ -894,6 +1510,19 @@ export default function OrderStatusMaster({ user }: Props) {
                         />
                       </div>
                       <div className="osm-field">
+                        <label className="osm-label">
+                          Firm <span style={{ color: '#94a3b8', fontWeight: 400, textTransform: 'none' }}>(auto-filled from order)</span>
+                        </label>
+                        <input
+                          className="osm-input"
+                          value={form.firm_name || ''}
+                          onChange={e => setForm(p => ({ ...p, firm_name: e.target.value }))}
+                          placeholder="Select an order above to auto-fill, or type manually"
+                        />
+                      </div>
+                    </div>
+                    <div className="osm-r2">
+                      <div className="osm-field">
                         <label className="osm-label">Total Order Meter <span className="osm-req">*</span></label>
                         <input
                           className="osm-input"
@@ -904,6 +1533,15 @@ export default function OrderStatusMaster({ user }: Props) {
                           onChange={e => setForm(p => ({ ...p, total_meter: parseFloat(e.target.value) || 0 }))}
                           placeholder="e.g. 1500"
                           required
+                        />
+                      </div>
+                      <div className="osm-field">
+                        <label className="osm-label">Customer</label>
+                        <input
+                          className="osm-input"
+                          value={form.customer_name || ''}
+                          readOnly
+                          placeholder="Auto-filled from order"
                         />
                       </div>
                     </div>
@@ -920,7 +1558,7 @@ export default function OrderStatusMaster({ user }: Props) {
 
                   {/* ── Status preview ───────────────────────────────── */}
                   {form.total_meter > 0 && (() => {
-                    const sc = STATUS_COLORS[previewStatus];
+                    const sc  = STATUS_COLORS[previewStatus];
                     const pct = Math.min(100, form.total_meter > 0 ? (deliveredTotal / form.total_meter) * 100 : 0);
                     return (
                       <div className="osm-preview-strip">
@@ -944,6 +1582,15 @@ export default function OrderStatusMaster({ user }: Props) {
                             <div className="osm-meter-val" style={{ color: '#64748b' }}>{pct.toFixed(0)}%</div>
                             <div className="osm-meter-lbl">Done</div>
                           </div>
+                          {excessTotal > 0 && (
+                            <>
+                              <div className="osm-divider" />
+                              <div className="osm-meter-item">
+                                <div className="osm-meter-val" style={{ color: '#dc2626' }}>+{fmt2(excessTotal)}</div>
+                                <div className="osm-meter-lbl">Extra</div>
+                              </div>
+                            </>
+                          )}
                         </div>
                         <div style={{ flex: 1, minWidth: 120 }}>
                           <div style={{ height: 8, background: '#e2e8f0', borderRadius: 99, overflow: 'hidden', marginBottom: 4 }}>
@@ -953,6 +1600,15 @@ export default function OrderStatusMaster({ user }: Props) {
                         <span className="osm-status-badge" style={{ background: sc.bg, color: sc.color, borderColor: sc.border, fontSize: 12, padding: '4px 12px' }}>
                           Auto Status: <strong style={{ marginLeft: 4 }}>{previewStatus}</strong>
                         </span>
+                        {excessTotal > 0 && (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+                            borderRadius: 20, padding: '4px 12px', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+                          }}>
+                            <FiAlertTriangle size={12} /> {fmt2(excessTotal)} m delivered over order total
+                          </span>
+                        )}
                       </div>
                     );
                   })()}
@@ -1032,15 +1688,28 @@ export default function OrderStatusMaster({ user }: Props) {
                             <td colSpan={2} style={{ padding: '8px 10px', fontSize: 12, color: '#475569', fontWeight: 700, background: '#f8fafc' }}>
                               Total Delivered
                             </td>
-                            <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'JetBrains Mono,monospace', fontWeight: 800, fontSize: 13, color: '#0f766e', background: '#f8fafc' }}>
+                            <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'JetBrains Mono,monospace', fontWeight: 800, fontSize: 13, color: excessTotal > 0 ? '#dc2626' : '#0f766e', background: '#f8fafc' }}>
                               {fmt2(deliveredTotal)} m
                             </td>
-                            <td colSpan={2} style={{ background: '#f8fafc' }} />
+                            <td colSpan={2} style={{ background: '#f8fafc' }}>
+                              {excessTotal > 0 && (
+                                <span style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                                  background: '#fff1f2', color: '#dc2626', border: '1px solid #fca5a5',
+                                  borderRadius: 20, padding: '2px 9px', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+                                }}>
+                                  ⚠ +{fmt2(excessTotal)} m over order total ({fmt2(form.total_meter || 0)} m)
+                                </span>
+                              )}
+                            </td>
                           </tr>
                         )}
                       </tbody>
                     </table>
                   </div>
+
+                  {/* ── Delivery Timeline Analysis ─────────────── */}
+                  {(form.deliveries || []).length > 0 && renderTimelineTable()}
 
                   {/* ── Cancel toggle ────────────────────────────────── */}
                   <div

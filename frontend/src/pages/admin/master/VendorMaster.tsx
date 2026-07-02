@@ -1,6 +1,6 @@
 // frontend/src/pages/admin/VendorMaster.tsx
 // Vendor Master — Full CRUD, Responsive (Mobile → Desktop)
-// Address format matches CustomerMaster: full INDIA_STATES map + AddressBlock component
+// Updated: Added Export menu (CSV / Excel / Print Table)
 
 import {
   useEffect,
@@ -28,6 +28,8 @@ import {
   Building2,
   Mail,
   MapPin,
+  Download,
+  Printer,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -79,8 +81,7 @@ interface Vendor {
 
 function isValidEmail(email: string): boolean {
   if (!email) return true;
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-  return re.test(email.trim());
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
 function isValidGst(gst: string): boolean {
@@ -90,8 +91,7 @@ function isValidGst(gst: string): boolean {
 
 function isValidContact(contact: string): boolean {
   if (!contact) return true;
-  const digits = contact.replace(/[\s\-\+]/g, '');
-  return /^\d{10,13}$/.test(digits);
+  return /^\d{10,13}$/.test(contact.replace(/[\s\-\+]/g, ''));
 }
 
 // ─── Field Error Types ────────────────────────────────────────────────────────
@@ -124,11 +124,8 @@ function useToast() {
 function FieldError({ msg }: { msg?: string }) {
   if (!msg) return null;
   return (
-    <span style={{
-      display: 'flex', alignItems: 'flex-start', gap: 4,
-      fontSize: 11, color: '#dc2626', marginTop: 4, lineHeight: 1.4,
-    }}>
-      <AlertCircle size={11} style={{ flexShrink: 0, marginTop: 1 }} />
+    <span style={{ display:'flex', alignItems:'flex-start', gap:4, fontSize:11, color:'#dc2626', marginTop:4, lineHeight:1.4 }}>
+      <AlertCircle size={11} style={{ flexShrink:0, marginTop:1 }} />
       <span>{msg}</span>
     </span>
   );
@@ -136,14 +133,12 @@ function FieldError({ msg }: { msg?: string }) {
 
 // ─── Field ───────────────────────────────────────────────────────────────────
 
-function Field({
-  label, required, children, error,
-}: {
+function Field({ label, required, children, error }: {
   label: string; required?: boolean; children: React.ReactNode; error?: string;
 }) {
   return (
     <div>
-      <label style={s.label}>{label}{required && <span style={{ color: '#ef4444' }}> *</span>}</label>
+      <label style={s.label}>{label}{required && <span style={{ color:'#ef4444' }}> *</span>}</label>
       {children}
       <FieldError msg={error} />
     </div>
@@ -157,7 +152,7 @@ function SectionHead({ title, open, onToggle, badge }: {
 }) {
   return (
     <div style={s.sectionHead} onClick={onToggle}>
-      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ display:'flex', alignItems:'center', gap:8 }}>
         <span style={s.sectionTitle}>{title}</span>
         {badge}
       </span>
@@ -170,24 +165,24 @@ function SectionHead({ title, open, onToggle, badge }: {
 
 function ToastContainer({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: number) => void }) {
   const cfg: Record<ToastType, { bg: string; border: string; color: string; icon: React.ReactNode }> = {
-    success: { bg: '#f0fdf4', border: '#86efac', color: '#166534', icon: <CheckCircle2 size={16} color="#16a34a" /> },
-    error:   { bg: '#fef2f2', border: '#fca5a5', color: '#991b1b', icon: <AlertCircle  size={16} color="#dc2626" /> },
-    warning: { bg: '#fffbeb', border: '#fde68a', color: '#92400e', icon: <AlertTriangle size={16} color="#d97706" /> },
-    info:    { bg: '#eff6ff', border: '#93c5fd', color: '#1e40af', icon: <Info          size={16} color="#2563eb" /> },
+    success: { bg:'#f0fdf4', border:'#86efac', color:'#166534', icon:<CheckCircle2 size={16} color="#16a34a" /> },
+    error:   { bg:'#fef2f2', border:'#fca5a5', color:'#991b1b', icon:<AlertCircle  size={16} color="#dc2626" /> },
+    warning: { bg:'#fffbeb', border:'#fde68a', color:'#92400e', icon:<AlertTriangle size={16} color="#d97706" /> },
+    info:    { bg:'#eff6ff', border:'#93c5fd', color:'#1e40af', icon:<Info          size={16} color="#2563eb" /> },
   };
   if (!toasts.length) return null;
   return (
-    <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 360, width: 'calc(100vw - 40px)', pointerEvents: 'none' }}>
+    <div style={{ position:'fixed', top:20, right:20, zIndex:9999, display:'flex', flexDirection:'column', gap:10, maxWidth:360, width:'calc(100vw - 40px)', pointerEvents:'none' }}>
       {toasts.map((t) => {
         const c = cfg[t.type];
         return (
-          <div key={t.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: c.bg, border: `1px solid ${c.border}`, borderRadius: 10, padding: '12px 14px', boxShadow: '0 4px 16px rgba(0,0,0,0.12)', pointerEvents: 'all', animation: 'toastIn 0.25s ease-out', fontFamily: "'DM Sans', sans-serif" }}>
-            <span style={{ flexShrink: 0, marginTop: 1 }}>{c.icon}</span>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: c.color }}>{t.title}</p>
-              {t.message && <p style={{ margin: '2px 0 0', fontSize: 12, color: c.color, opacity: 0.8, lineHeight: 1.4 }}>{t.message}</p>}
+          <div key={t.id} style={{ display:'flex', alignItems:'flex-start', gap:10, background:c.bg, border:`1px solid ${c.border}`, borderRadius:10, padding:'12px 14px', boxShadow:'0 4px 16px rgba(0,0,0,0.12)', pointerEvents:'all', animation:'toastIn 0.25s ease-out', fontFamily:"'DM Sans', sans-serif" }}>
+            <span style={{ flexShrink:0, marginTop:1 }}>{c.icon}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:0, fontSize:13, fontWeight:700, color:c.color }}>{t.title}</p>
+              {t.message && <p style={{ margin:'2px 0 0', fontSize:12, color:c.color, opacity:0.8, lineHeight:1.4 }}>{t.message}</p>}
             </div>
-            <button onClick={() => onRemove(t.id)} style={{ flexShrink: 0, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: c.color, opacity: 0.6, display: 'flex', alignItems: 'center', marginTop: 1 }}>
+            <button onClick={() => onRemove(t.id)} style={{ flexShrink:0, background:'none', border:'none', padding:0, cursor:'pointer', color:c.color, opacity:0.6, display:'flex', alignItems:'center', marginTop:1 }}>
               <X size={14} />
             </button>
           </div>
@@ -197,11 +192,109 @@ function ToastContainer({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: 
   );
 }
 
+// ─── Export Menu ─────────────────────────────────────────────────────────────
+
+function ExportMenu({
+  onExportCSV,
+  onExportExcel,
+  onPrint,
+}: {
+  onExportCSV: () => void;
+  onExportExcel: () => void;
+  onPrint: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position:'relative', flexShrink:0 }}>
+      <button
+        className="vm-export-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Download size={14} />
+        Export
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+
+      {open && (
+        <div className="vm-export-dropdown">
+          <p className="vm-export-label">EXPORT / PRINT</p>
+
+          <button className="vm-export-item" onClick={() => { onExportCSV(); setOpen(false); }}>
+            <span className="vm-export-icon vm-export-icon-csv">
+              <FileText size={14} />
+            </span>
+            Export as CSV
+          </button>
+
+          <button className="vm-export-item" onClick={() => { onExportExcel(); setOpen(false); }}>
+            <span className="vm-export-icon vm-export-icon-excel">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>
+              </svg>
+            </span>
+            Export as Excel
+          </button>
+
+          <div className="vm-export-divider" />
+
+          <button className="vm-export-item" onClick={() => { onPrint(); setOpen(false); }}>
+            <span className="vm-export-icon vm-export-icon-print">
+              <Printer size={14} />
+            </span>
+            Print Table
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+const CSV_COLUMNS: { key: keyof Vendor; label: string }[] = [
+  { key: 'vendor_id',    label: 'Vendor ID' },
+  { key: 'vendor_name',  label: 'Vendor Name' },
+  { key: 'contact_no',   label: 'Contact No' },
+  { key: 'email',        label: 'Email' },
+  { key: 'gst_no',       label: 'GST No' },
+  { key: 'msme',         label: 'MSME' },
+  { key: 'state',        label: 'State' },
+  { key: 'district',     label: 'District' },
+  { key: 'pin_code',     label: 'Pin Code' },
+  { key: 'status',       label: 'Status' },
+];
+
+function toCSV(rows: Vendor[]): string {
+  const header = CSV_COLUMNS.map((c) => `"${c.label}"`).join(',');
+  const lines  = rows.map((r) =>
+    CSV_COLUMNS.map((c) => `"${String(r[c.key] ?? '').replace(/"/g, '""')}"`).join(',')
+  );
+  return [header, ...lines].join('\r\n');
+}
+
+function downloadBlob(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Multi-checkbox selector ─────────────────────────────────────────────────
 
-function MultiCheck({
-  label, items, idKey, labelKey, selected, onChange,
-}: {
+function MultiCheck({ label, items, idKey, labelKey, selected, onChange }: {
   label: string; items: any[]; idKey: string; labelKey: string;
   selected: number[]; onChange: (ids: number[]) => void;
 }) {
@@ -210,19 +303,19 @@ function MultiCheck({
   return (
     <div>
       <label style={s.label}>{label}</label>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '6px 0' }}>
-        {items.length === 0 && <span style={{ fontSize: 12, color: '#9ca3af' }}>No options available</span>}
+      <div style={{ display:'flex', flexWrap:'wrap', gap:8, padding:'6px 0' }}>
+        {items.length === 0 && <span style={{ fontSize:12, color:'#9ca3af' }}>No options available</span>}
         {items.map((item) => {
           const id = item[idKey] as number;
           const active = selected.includes(id);
           return (
             <button key={id} type="button" onClick={() => toggle(id)} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '5px 11px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              display:'flex', alignItems:'center', gap:6,
+              padding:'5px 11px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
               border: active ? '1.5px solid #0f766e' : '1.5px solid #cbd5e1',
               background: active ? '#f0fdfa' : '#fff',
               color: active ? '#0f766e' : '#6b7280',
-              fontFamily: "'DM Sans', sans-serif", transition: 'all 0.15s',
+              fontFamily:"'DM Sans', sans-serif", transition:'all 0.15s',
             }}>
               {active ? <CheckSquare size={13} /> : <Square size={13} />}
               {item[labelKey]}
@@ -234,7 +327,7 @@ function MultiCheck({
   );
 }
 
-// ─── India States & Districts (full map — same as CustomerMaster) ─────────────
+// ─── India States & Districts ─────────────────────────────────────────────────
 
 const INDIA_STATES: Record<string, string[]> = {
   "Tamil Nadu": [
@@ -419,114 +512,50 @@ const INDIA_STATES: Record<string, string[]> = {
 const STATE_LIST = Object.keys(INDIA_STATES).sort();
 const DEFAULT_STATE = 'Tamil Nadu';
 
-// ─── AddressBlock (mirrors CustomerMaster exactly) ────────────────────────────
+// ─── AddressBlock ─────────────────────────────────────────────────────────────
 
-interface AddressBlockProps {
-  form: Vendor;
-  onChange: (updates: Partial<Vendor>) => void;
-}
+interface AddressBlockProps { form: Vendor; onChange: (updates: Partial<Vendor>) => void; }
 
 function AddressBlock({ form, onChange }: AddressBlockProps) {
   const state     = form.state || DEFAULT_STATE;
   const districts = INDIA_STATES[state] || [];
-
   const set = (key: keyof Vendor, val: string) => onChange({ [key]: val } as Partial<Vendor>);
 
-  const handleStateChange = (newState: string) => {
-    onChange({ state: newState, district: '' });
-  };
-
   return (
-    <div style={{
-      border: '1.5px solid #99f6e4', borderRadius: 12,
-      overflow: 'hidden', background: '#fff', marginTop: 10,
-    }}>
-      {/* Coloured header bar */}
-      <div style={{
-        background: '#f0fdfa', borderBottom: '1px solid #99f6e4',
-        padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 8,
-      }}>
+    <div style={{ border:'1.5px solid #99f6e4', borderRadius:12, overflow:'hidden', background:'#fff', marginTop:10 }}>
+      <div style={{ background:'#f0fdfa', borderBottom:'1px solid #99f6e4', padding:'10px 16px', display:'flex', alignItems:'center', gap:8 }}>
         <MapPin size={15} color="#0f766e" />
-        <span style={{
-          fontSize: 12, fontWeight: 800, color: '#0f766e',
-          textTransform: 'uppercase', letterSpacing: '0.07em',
-        }}>
-          Vendor Address
-        </span>
+        <span style={{ fontSize:12, fontWeight:800, color:'#0f766e', textTransform:'uppercase', letterSpacing:'0.07em' }}>Vendor Address</span>
       </div>
-
-      {/* Grid of fields */}
-      <div style={{
-        padding: '14px 16px',
-        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px',
-      }}>
-        {/* Address Line 1 — full width */}
-        <div style={{ gridColumn: '1 / -1' }}>
+      <div style={{ padding:'14px 16px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px 16px' }}>
+        <div style={{ gridColumn:'1 / -1' }}>
           <label style={s.label}>Address Line 1</label>
-          <input
-            value={form.address1 || ''}
-            onChange={(e) => set('address1', e.target.value)}
-            placeholder="Door no, Street name"
-            style={s.input}
-          />
+          <input value={form.address1 || ''} onChange={(e) => set('address1', e.target.value)} placeholder="Door no, Street name" style={s.input} />
         </div>
-
-        {/* Address Line 2 — full width */}
-        <div style={{ gridColumn: '1 / -1' }}>
+        <div style={{ gridColumn:'1 / -1' }}>
           <label style={s.label}>Address Line 2</label>
-          <input
-            value={form.address2 || ''}
-            onChange={(e) => set('address2', e.target.value)}
-            placeholder="Area, Landmark (optional)"
-            style={s.input}
-          />
+          <input value={form.address2 || ''} onChange={(e) => set('address2', e.target.value)} placeholder="Area, Landmark (optional)" style={s.input} />
         </div>
-
-        {/* State */}
         <div>
           <label style={s.label}>State</label>
-          <select
-            value={state}
-            onChange={(e) => handleStateChange(e.target.value)}
-            style={{ ...s.input, cursor: 'pointer' }}
-          >
+          <select value={state} onChange={(e) => onChange({ state: e.target.value, district: '' })} style={{ ...s.input, cursor:'pointer' }}>
             {STATE_LIST.map((st) => <option key={st} value={st}>{st}</option>)}
           </select>
         </div>
-
-        {/* District */}
         <div>
           <label style={s.label}>District</label>
-          <select
-            value={form.district || ''}
-            onChange={(e) => set('district', e.target.value)}
-            style={{ ...s.input, cursor: 'pointer' }}
-          >
+          <select value={form.district || ''} onChange={(e) => set('district', e.target.value)} style={{ ...s.input, cursor:'pointer' }}>
             <option value="">— Select District —</option>
             {districts.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </div>
-
-        {/* Pin Code */}
         <div>
           <label style={s.label}>Pin Code</label>
-          <input
-            value={form.pin_code || ''}
-            onChange={(e) => set('pin_code', e.target.value.replace(/\D/g, '').slice(0, 6))}
-            placeholder="6-digit pincode"
-            maxLength={6}
-            style={s.input}
-          />
+          <input value={form.pin_code || ''} onChange={(e) => set('pin_code', e.target.value.replace(/\D/g,'').slice(0,6))} placeholder="6-digit pincode" maxLength={6} style={s.input} />
         </div>
-
-        {/* Country */}
         <div>
           <label style={s.label}>Country</label>
-          <input
-            value={form.country || 'India'}
-            onChange={(e) => set('country', e.target.value)}
-            style={s.input}
-          />
+          <input value={form.country || 'India'} onChange={(e) => set('country', e.target.value)} style={s.input} />
         </div>
       </div>
     </div>
@@ -539,8 +568,6 @@ function sanitizeVendor(data: any): Vendor {
   const safe = (v: any) => (v == null ? '' : String(v));
   const type_ids            = (data.types            ?? []).map((t: any) => t.id);
   const processing_type_ids = (data.processing_types ?? []).map((p: any) => p.id);
-
-  // backward compat: if old `address` field exists, split into address1/address2
   let address1 = safe(data.address1);
   let address2 = safe(data.address2);
   if (!address1 && data.address) {
@@ -548,50 +575,33 @@ function sanitizeVendor(data: any): Vendor {
     address1 = lines[0] || '';
     address2 = lines.slice(1).join('\n') || '';
   }
-
   return {
-    ...BLANK,
-    ...data,
-    vendor_name:   safe(data.vendor_name),
-    address1,
-    address2,
-    pin_code:      safe(data.pin_code),
-    district:      safe(data.district),
-    state:         safe(data.state) || DEFAULT_STATE,
-    country:       safe(data.country) || 'India',
-    gst_no:        safe(data.gst_no),
-    email:         safe(data.email),
-    contact_name:  safe(data.contact_name),
-    designation:   safe(data.designation),
-    contact_no:    safe(data.contact_no),
-    contact_email: safe(data.contact_email),
-    msme:          (data.msme === 'Yes' ? 'Yes' : 'No') as 'Yes' | 'No',
-    msme_sector:   safe(data.msme_sector),
-    msme_type:     safe(data.msme_type),
-    msme_reg_no:   safe(data.msme_reg_no),
-    status:        safe(data.status) || 'Active',
-    type_ids,
-    processing_type_ids,
-    attachments:   data.attachments ?? [],
+    ...BLANK, ...data,
+    vendor_name: safe(data.vendor_name), address1, address2,
+    pin_code: safe(data.pin_code), district: safe(data.district),
+    state: safe(data.state) || DEFAULT_STATE, country: safe(data.country) || 'India',
+    gst_no: safe(data.gst_no), email: safe(data.email),
+    contact_name: safe(data.contact_name), designation: safe(data.designation),
+    contact_no: safe(data.contact_no), contact_email: safe(data.contact_email),
+    msme: (data.msme === 'Yes' ? 'Yes' : 'No') as 'Yes' | 'No',
+    msme_sector: safe(data.msme_sector), msme_type: safe(data.msme_type), msme_reg_no: safe(data.msme_reg_no),
+    status: safe(data.status) || 'Active',
+    type_ids, processing_type_ids, attachments: data.attachments ?? [],
   };
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const BLANK: Vendor = {
-  vendor_name: '', address1: '', address2: '', pin_code: '', district: '',
-  state: DEFAULT_STATE, country: 'India',
-  gst_no: '',
-  msme: 'No', msme_sector: '', msme_type: '', msme_reg_no: '',
-  email: '', contact_name: '', designation: '', contact_no: '', contact_email: '',
-  status: 'Active',
-  type_ids: [], processing_type_ids: [], attachments: [],
+  vendor_name:'', address1:'', address2:'', pin_code:'', district:'',
+  state: DEFAULT_STATE, country:'India', gst_no:'',
+  msme:'No', msme_sector:'', msme_type:'', msme_reg_no:'',
+  email:'', contact_name:'', designation:'', contact_no:'', contact_email:'',
+  status:'Active', type_ids:[], processing_type_ids:[], attachments:[],
 };
 
 const API = '/api/vendors';
 const PAGE_SIZE_OPTIONS = [5, 10, 25, 50];
-
-// ─── useWidth hook ────────────────────────────────────────────────────────────
 
 function useWidth() {
   const [w, setW] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
@@ -607,7 +617,7 @@ function useWidth() {
 
 export default function VendorMaster() {
   const [vendors, setVendors]   = useState<Vendor[]>([]);
-  const [lookup, setLookup]     = useState<LookupData>({ serviceTypes: [], processingTypes: [] });
+  const [lookup, setLookup]     = useState<LookupData>({ serviceTypes:[], processingTypes:[] });
   const [loading, setLoading]   = useState(false);
   const [saving, setSaving]     = useState(false);
   const [search, setSearch]     = useState('');
@@ -620,9 +630,7 @@ export default function VendorMaster() {
   const [editId, setEditId]     = useState<number | null>(null);
   const [error, setError]       = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [sec, setSec] = useState({
-    basic: true, address: true, contact: true, msme: false, attach: false,
-  });
+  const [sec, setSec] = useState({ basic:true, address:true, contact:true, msme:false, attach:false });
 
   const { toasts, push: pushToast, remove: removeToast } = useToast();
   const fileRef  = useRef<HTMLInputElement>(null);
@@ -638,9 +646,7 @@ export default function VendorMaster() {
       const data = await res.json();
       setVendors(data.data ?? []);
       setTotal(data.total ?? 0);
-    } catch {
-      pushToast('error', 'Load Failed', 'Could not fetch vendors.');
-    }
+    } catch { pushToast('error','Load Failed','Could not fetch vendors.'); }
     setLoading(false);
   };
 
@@ -659,6 +665,50 @@ export default function VendorMaster() {
     return () => { document.body.style.overflow = ''; };
   }, [showForm]);
 
+  // ── Export handlers ───────────────────────────────────────
+  const handleExportCSV = () => {
+    downloadBlob(toCSV(vendors), 'vendors.csv', 'text/csv;charset=utf-8;');
+    pushToast('success','CSV Exported',`${vendors.length} record(s) downloaded.`);
+  };
+
+  const handleExportExcel = () => {
+    const tsv = [
+      CSV_COLUMNS.map((c) => c.label).join('\t'),
+      ...vendors.map((r) => CSV_COLUMNS.map((c) => String(r[c.key] ?? '')).join('\t')),
+    ].join('\r\n');
+    downloadBlob(tsv, 'vendors.xls', 'application/vnd.ms-excel;charset=utf-8;');
+    pushToast('success','Excel Exported',`${vendors.length} record(s) downloaded.`);
+  };
+
+  const handlePrint = () => {
+    const rows = vendors.map((r) =>
+      `<tr>${CSV_COLUMNS.map((c) => `<td>${String(r[c.key] ?? '')}</td>`).join('')}</tr>`
+    ).join('');
+    const html = `
+      <html><head><title>Vendor Master</title>
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 12px; }
+        h2   { margin-bottom: 8px; color: #1e293b; }
+        table { border-collapse: collapse; width: 100%; }
+        th { background: #0f766e; color: #fff; padding: 7px 10px; text-align: left; font-size: 11px; }
+        td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
+        tr:nth-child(even) td { background: #f8fafc; }
+        @media print { @page { margin: 15mm; } }
+      </style></head>
+      <body>
+        <h2>🏢 Vendor Master</h2>
+        <p style="font-size:11px;color:#64748b;margin-bottom:12px;">
+          Exported on ${new Date().toLocaleString()} — ${vendors.length} record(s)
+        </p>
+        <table>
+          <thead><tr>${CSV_COLUMNS.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </body></html>`;
+    const w = window.open('','_blank');
+    if (w) { w.document.write(html); w.document.close(); w.print(); }
+  };
+
   // ── Open form ─────────────────────────────────────────────
   const openCreate = () => {
     setForm(sanitizeVendor(BLANK));
@@ -671,12 +721,10 @@ export default function VendorMaster() {
       const data = await res.json();
       setForm(sanitizeVendor(data));
       setEditId(id); setError(''); setFieldErrors({}); setShowForm(true);
-    } catch {
-      pushToast('error', 'Load Failed', 'Could not load vendor details.');
-    }
+    } catch { pushToast('error','Load Failed','Could not load vendor details.'); }
   };
 
-  // ── Live field validation ─────────────────────────────────
+  // ── Live validation ───────────────────────────────────────
   const validateField = (key: keyof FieldErrors, value: string) => {
     let msg = '';
     switch (key) {
@@ -697,7 +745,6 @@ export default function VendorMaster() {
     setFieldErrors((prev) => ({ ...prev, [key]: msg || undefined }));
   };
 
-  // ── Validate all before save ──────────────────────────────
   const validateAll = (): boolean => {
     const errors: FieldErrors = {};
     if (!form.vendor_name.trim()) errors.vendor_name = 'Vendor Name is required.';
@@ -719,23 +766,21 @@ export default function VendorMaster() {
     if (!validateAll()) {
       setError('Please fix the highlighted errors before saving.');
       const hasContactErr = !!(fieldErrors.email || fieldErrors.contact_no || fieldErrors.contact_email);
-      if (hasContactErr) setSec((p) => ({ ...p, contact: true }));
+      if (hasContactErr) setSec((p) => ({ ...p, contact:true }));
       return;
     }
     setError(''); setSaving(true);
-
     const fd = new FormData();
     const scalars: (keyof Vendor)[] = [
-      'vendor_name', 'address1', 'address2', 'pin_code', 'district', 'state', 'country',
-      'gst_no', 'msme', 'msme_sector', 'msme_type', 'msme_reg_no',
-      'email', 'contact_name', 'designation', 'contact_no', 'contact_email', 'status',
+      'vendor_name','address1','address2','pin_code','district','state','country',
+      'gst_no','msme','msme_sector','msme_type','msme_reg_no',
+      'email','contact_name','designation','contact_no','contact_email','status',
     ];
     scalars.forEach((k) => fd.append(k as string, String(form[k] ?? '')));
     fd.append('type_ids',            JSON.stringify(form.type_ids));
     fd.append('processing_type_ids', JSON.stringify(form.processing_type_ids));
     form.attachments.filter((a) => a.isNew && a.file).forEach((a) => fd.append('attachments', a.file!));
     if (editId) fd.append('deleted_attachments', JSON.stringify(form.__deletedAttachments ?? []));
-
     try {
       const res = await fetch(editId ? `${API}/${editId}` : API, { method: editId ? 'PUT' : 'POST', body: fd });
       if (!res.ok) throw new Error(await res.text());
@@ -743,7 +788,7 @@ export default function VendorMaster() {
       setShowForm(false); loadVendors();
     } catch (e: any) {
       const msg = e.message ?? 'Save failed';
-      setError(msg); pushToast('error', 'Save Failed', msg);
+      setError(msg); pushToast('error','Save Failed', msg);
     }
     setSaving(false);
   };
@@ -751,22 +796,18 @@ export default function VendorMaster() {
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this vendor?')) return;
     try {
-      await fetch(`${API}/${id}`, { method: 'DELETE' });
-      pushToast('success', 'Vendor Deleted', 'The vendor record has been removed.');
+      await fetch(`${API}/${id}`, { method:'DELETE' });
+      pushToast('success','Vendor Deleted','The vendor record has been removed.');
       loadVendors();
-    } catch {
-      pushToast('error', 'Delete Failed', 'Could not delete vendor.');
-    }
+    } catch { pushToast('error','Delete Failed','Could not delete vendor.'); }
   };
 
   // ── Form helpers ──────────────────────────────────────────
   const setF = (key: keyof Vendor, val: any) => setForm((f) => ({ ...f, [key]: val }));
-
   const inp = (key: keyof Vendor, type = 'text') => (
     <input type={type} value={form[key] == null ? '' : String(form[key])}
       onChange={(e) => setF(key, e.target.value)} style={s.input} />
   );
-
   const sel = (key: keyof Vendor, opts: string[]) => (
     <select value={form[key] == null ? '' : String(form[key])}
       onChange={(e) => setF(key, e.target.value)} style={s.input}>
@@ -774,24 +815,18 @@ export default function VendorMaster() {
       {opts.map((o) => <option key={o} value={o}>{o}</option>)}
     </select>
   );
-
   const handleFileAdd = (files: FileList | null) => {
     if (!files) return;
-    setForm((p) => ({ ...p, attachments: [...p.attachments, ...Array.from(files).map((f) => ({ file_name: f.name, isNew: true, file: f }))] }));
+    setForm((p) => ({ ...p, attachments:[...p.attachments, ...Array.from(files).map((f) => ({ file_name:f.name, isNew:true, file:f }))] }));
   };
-
   const removeAttachment = (i: number) => {
     setForm((p) => {
       const att = p.attachments[i];
       const deleted = p.__deletedAttachments ?? [];
-      return { ...p, attachments: p.attachments.filter((_, j) => j !== i), __deletedAttachments: att.id ? [...deleted, att.id] : deleted };
+      return { ...p, attachments:p.attachments.filter((_,j) => j !== i), __deletedAttachments: att.id ? [...deleted, att.id] : deleted };
     });
   };
-
-  const handleAddressChange = (updates: Partial<Vendor>) =>
-    setForm((f) => ({ ...f, ...updates }));
-
-  const toggle = (k: keyof typeof sec) => setSec((p) => ({ ...p, [k]: !p[k] }));
+  const toggle = (k: keyof typeof sec) => setSec((p) => ({ ...p, [k]:!p[k] }));
 
   // ── Pagination ────────────────────────────────────────────
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -818,22 +853,70 @@ export default function VendorMaster() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; }
-        @keyframes toastIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
-        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes toastIn    { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+        @keyframes spin       { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+        @keyframes dropdownIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
 
-        .vm-wrap { font-family: 'DM Sans', sans-serif; font-size: 14px; color: #1e293b; }
+        .vm-wrap { font-family:'DM Sans',sans-serif; font-size:14px; color:#1e293b; }
 
         .vm-page-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; flex-wrap:wrap; gap:10px; }
         .vm-page-header h1 { margin:0; font-size:20px; font-weight:700; color:#1e293b; }
         .vm-page-header p  { margin:3px 0 0; font-size:13px; color:#64748b; }
-        @media (min-width:576px) { .vm-page-header h1 { font-size:22px; } }
+        @media(min-width:576px){ .vm-page-header h1 { font-size:22px; } }
+
+        .vm-header-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 
         .vm-add-btn { display:flex; align-items:center; gap:6px; background:#0f766e; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 6px rgba(15,118,110,0.3); white-space:nowrap; flex-shrink:0; touch-action:manipulation; }
         .vm-add-btn:hover { background:#0d6460; }
 
+        /* ── Export button ── */
+        .vm-export-btn {
+          display:flex; align-items:center; gap:6px;
+          background:#fff; color:#0f766e;
+          border:1.5px solid #0f766e; border-radius:8px;
+          padding:8px 14px; font-size:13px; font-weight:600;
+          cursor:pointer; font-family:'DM Sans',sans-serif;
+          white-space:nowrap; flex-shrink:0; touch-action:manipulation;
+          transition:background 0.15s, box-shadow 0.15s;
+        }
+        .vm-export-btn:hover { background:#f0fdfa; box-shadow:0 2px 6px rgba(15,118,110,0.18); }
+
+        /* ── Export dropdown ── */
+        .vm-export-dropdown {
+          position:absolute; top:calc(100% + 6px); right:0;
+          min-width:190px;
+          background:#fff; border:1px solid #e2e8f0; border-radius:10px;
+          box-shadow:0 8px 24px rgba(0,0,0,0.12);
+          padding:6px 0; z-index:3000;
+          animation:dropdownIn 0.18s ease-out;
+          font-family:'DM Sans',sans-serif;
+        }
+        .vm-export-label {
+          padding:6px 14px 4px; margin:0;
+          font-size:10px; font-weight:700; color:#94a3b8;
+          letter-spacing:0.07em; text-transform:uppercase;
+        }
+        .vm-export-item {
+          display:flex; align-items:center; gap:10px;
+          width:100%; padding:9px 14px;
+          background:none; border:none; cursor:pointer;
+          font-size:13px; font-weight:500; color:#1e293b;
+          font-family:'DM Sans',sans-serif; text-align:left;
+          transition:background 0.12s;
+        }
+        .vm-export-item:hover { background:#f8fafc; }
+        .vm-export-divider { height:1px; background:#f1f5f9; margin:4px 0; }
+        .vm-export-icon {
+          width:26px; height:26px; border-radius:6px;
+          display:flex; align-items:center; justify-content:center; flex-shrink:0;
+        }
+        .vm-export-icon-csv   { background:#fef3c7; color:#92400e; }
+        .vm-export-icon-excel { background:#dcfce7; color:#16a34a; }
+        .vm-export-icon-print { background:#f0fdfa; color:#0f766e; }
+
         .vm-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
         .vm-search-wrap { position:relative; flex:1; min-width:180px; max-width:100%; }
-        @media (min-width:768px) { .vm-search-wrap { max-width:320px; } }
+        @media(min-width:768px){ .vm-search-wrap { max-width:320px; } }
         .vm-search-wrap svg { position:absolute; left:10px; top:50%; transform:translateY(-50%); color:#94a3b8; }
         .vm-search { width:100%; padding:8px 12px 8px 34px; border:1px solid #cbd5e1; border-radius:8px; font-size:13px; font-family:'DM Sans',sans-serif; background:#fff; color:#1e293b; outline:none; }
         .vm-search:focus { border-color:#0f766e; }
@@ -848,13 +931,13 @@ export default function VendorMaster() {
         .vm-table { width:100%; border-collapse:collapse; font-size:13px; font-family:'DM Sans',sans-serif; min-width:480px; }
         .vm-table thead tr { background:#0f766e; }
         .vm-table th { padding:11px 12px; color:#fff; font-weight:600; text-align:left; white-space:nowrap; font-size:12px; }
-        @media (min-width:768px) { .vm-table th { font-size:13px; padding:12px 16px; } }
+        @media(min-width:768px){ .vm-table th { font-size:13px; padding:12px 16px; } }
         .vm-table th.th-center { text-align:center; }
         .vm-table tbody tr:nth-child(odd)  td { background:#fff; }
         .vm-table tbody tr:nth-child(even) td { background:#f8fafc; }
         .vm-table tbody tr:hover td { filter:brightness(0.97); }
         .vm-table td { padding:10px 12px; color:#374151; font-size:12px; white-space:nowrap; }
-        @media (min-width:768px) { .vm-table td { font-size:13px; padding:11px 16px; } }
+        @media(min-width:768px){ .vm-table td { font-size:13px; padding:11px 16px; } }
 
         .vm-ven-id { display:inline-block; font-family:'DM Mono',monospace; font-size:11px; font-weight:500; color:#0f766e; background:#f0fdfa; border:1px solid #99f6e4; border-radius:6px; padding:2px 7px; letter-spacing:0.03em; }
         .vm-chip { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; }
@@ -872,29 +955,29 @@ export default function VendorMaster() {
         .vm-empty { text-align:center; padding:40px 16px; color:#94a3b8; font-size:13px; }
 
         .vm-pagination { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-top:1px solid #f1f5f9; background:#f8fafc; font-size:12px; color:#64748b; flex-wrap:wrap; gap:8px; font-family:'DM Sans',sans-serif; }
-        @media (min-width:576px) { .vm-pagination { padding:10px 16px; font-size:13px; } }
+        @media(min-width:576px){ .vm-pagination { padding:10px 16px; font-size:13px; } }
         .vm-pag-btns { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
         .vm-pag-btn { padding:4px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; cursor:pointer; font-size:12px; font-family:'DM Sans',sans-serif; color:#1e293b; min-width:30px; height:30px; display:flex; align-items:center; justify-content:center; touch-action:manipulation; }
-        @media (min-width:576px) { .vm-pag-btn { padding:5px 12px; height:32px; font-size:13px; } }
+        @media(min-width:576px){ .vm-pag-btn { padding:5px 12px; height:32px; font-size:13px; } }
         .vm-pag-btn:hover:not(:disabled) { background:#f1f5f9; }
         .vm-pag-btn.active { background:#0f766e; color:#fff; border-color:#0f766e; font-weight:700; }
         .vm-pag-btn:disabled { border-color:#e2e8f0; background:#f1f5f9; color:#94a3b8; cursor:not-allowed; }
 
         .vm-modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,0.5); display:flex; align-items:flex-start; justify-content:center; z-index:2000; overflow-y:auto; padding:16px 8px; -webkit-overflow-scrolling:touch; }
-        @media (min-width:576px) { .vm-modal-overlay { padding:24px 16px; } }
-        @media (min-width:992px) { .vm-modal-overlay { padding:32px 24px; } }
+        @media(min-width:576px){ .vm-modal-overlay { padding:24px 16px; } }
+        @media(min-width:992px){ .vm-modal-overlay { padding:32px 24px; } }
         .vm-modal { background:#fff; border-radius:14px; width:100%; max-width:860px; box-shadow:0 8px 40px rgba(0,0,0,0.22); display:flex; flex-direction:column; max-height:calc(100vh - 32px); }
-        @media (min-width:576px) { .vm-modal { border-radius:16px; max-height:calc(100vh - 48px); } }
+        @media(min-width:576px){ .vm-modal { border-radius:16px; max-height:calc(100vh - 48px); } }
         .vm-modal-header { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; background:#0f766e; border-radius:14px 14px 0 0; flex-shrink:0; }
-        @media (min-width:576px) { .vm-modal-header { padding:16px 24px; border-radius:16px 16px 0 0; } }
+        @media(min-width:576px){ .vm-modal-header { padding:16px 24px; border-radius:16px 16px 0 0; } }
         .vm-modal-body { padding:16px; overflow-y:auto; flex:1; -webkit-overflow-scrolling:touch; }
-        @media (min-width:576px) { .vm-modal-body { padding:20px 24px; } }
+        @media(min-width:576px){ .vm-modal-body { padding:20px 24px; } }
         .vm-modal-footer { display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid #f1f5f9; background:#f8fafc; flex-shrink:0; border-radius:0 0 14px 14px; }
-        @media (min-width:576px) { .vm-modal-footer { padding:14px 24px; border-radius:0 0 16px 16px; } }
+        @media(min-width:576px){ .vm-modal-footer { padding:14px 24px; border-radius:0 0 16px 16px; } }
 
         .vm-grid { display:grid; grid-template-columns:1fr; gap:12px; padding:12px 0; }
-        @media (min-width:480px) { .vm-grid { grid-template-columns:repeat(2,1fr); gap:14px; } }
-        @media (min-width:768px) { .vm-grid { grid-template-columns:repeat(3,1fr); gap:14px 16px; } }
+        @media(min-width:480px){ .vm-grid { grid-template-columns:repeat(2,1fr); gap:14px; } }
+        @media(min-width:768px){ .vm-grid { grid-template-columns:repeat(3,1fr); gap:14px 16px; } }
         .vm-col-full { grid-column:1 / -1; }
 
         .vm-btn-cancel { padding:9px 16px; border:1px solid #cbd5e1; background:#fff; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; color:#475569; font-family:'DM Sans',sans-serif; touch-action:manipulation; }
@@ -921,9 +1004,17 @@ export default function VendorMaster() {
             </h1>
             <p>{total} vendor{total !== 1 ? 's' : ''} registered</p>
           </div>
-          <button className="vm-add-btn" onClick={openCreate}>
-            <Plus size={15} /> New Vendor
-          </button>
+          <div className="vm-header-actions">
+            {/* ── EXPORT MENU ── */}
+            <ExportMenu
+              onExportCSV={handleExportCSV}
+              onExportExcel={handleExportExcel}
+              onPrint={handlePrint}
+            />
+            <button className="vm-add-btn" onClick={openCreate}>
+              <Plus size={15} /> New Vendor
+            </button>
+          </div>
         </div>
 
         {/* ── TOOLBAR ── */}
@@ -1020,7 +1111,6 @@ export default function VendorMaster() {
           <div className="vm-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowForm(false); }}>
             <div className="vm-modal">
 
-              {/* Header */}
               <div className="vm-modal-header">
                 <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
                   <h2 style={{ margin:0, fontSize:isMobile ? 15 : 18, fontWeight:700, color:'#fff' }}>
@@ -1033,7 +1123,6 @@ export default function VendorMaster() {
                 <button style={s.closeBtn} onClick={() => setShowForm(false)}><X size={20} color="#fff" /></button>
               </div>
 
-              {/* Error banner */}
               {error && (
                 <div style={s.errorBanner}>
                   <AlertCircle size={15} style={{ flexShrink:0 }} />
@@ -1044,10 +1133,8 @@ export default function VendorMaster() {
                 </div>
               )}
 
-              {/* Body */}
               <div className="vm-modal-body">
 
-                {/* ── Basic Info ── */}
                 <SectionHead title="Basic Information" open={sec.basic} onToggle={() => toggle('basic')} />
                 {sec.basic && (
                   <div className="vm-grid">
@@ -1062,26 +1149,23 @@ export default function VendorMaster() {
                     <div className="vm-col-full">
                       <Field label="Vendor Name" required error={fieldErrors.vendor_name}>
                         <input type="text" value={form.vendor_name}
-                          onChange={(e) => { setF('vendor_name', e.target.value); if (e.target.value.trim()) setFieldErrors((p) => ({ ...p, vendor_name: undefined })); }}
+                          onChange={(e) => { setF('vendor_name', e.target.value); if (e.target.value.trim()) setFieldErrors((p) => ({ ...p, vendor_name:undefined })); }}
                           style={{ ...s.input, ...(fieldErrors.vendor_name ? s.inputError : {}) }} />
                       </Field>
                     </div>
-                    <Field label="Status">{sel('status', ['Active', 'Inactive'])}</Field>
+                    <Field label="Status">{sel('status', ['Active','Inactive'])}</Field>
                   </div>
                 )}
 
-                {/* ── Address Details — AddressBlock ── */}
                 <SectionHead title="Address Details" open={sec.address} onToggle={() => toggle('address')} />
                 {sec.address && (
-                  <AddressBlock form={form} onChange={handleAddressChange} />
+                  <AddressBlock form={form} onChange={(updates) => setForm((f) => ({ ...f, ...updates }))} />
                 )}
 
-                {/* ── Contact Details ── */}
                 <SectionHead title="Contact Details" open={sec.contact} onToggle={() => toggle('contact')} />
                 {sec.contact && (
                   <div className="vm-grid">
 
-                    {/* E-Mail */}
                     <Field label="E-Mail" error={fieldErrors.email}>
                       <div style={{ position:'relative' }}>
                         <input type="email" value={form.email}
@@ -1103,7 +1187,6 @@ export default function VendorMaster() {
                     <Field label="Contact Name">{inp('contact_name')}</Field>
                     <Field label="Designation">{inp('designation')}</Field>
 
-                    {/* Contact No */}
                     <Field label="Contact No" error={fieldErrors.contact_no}>
                       <input type="tel" value={form.contact_no}
                         onChange={(e) => { const v = e.target.value.replace(/[^\d\s\+\-]/g,'').slice(0,15); setF('contact_no', v); validateField('contact_no', v); }}
@@ -1115,7 +1198,6 @@ export default function VendorMaster() {
                       )}
                     </Field>
 
-                    {/* Contact E-Mail */}
                     <Field label="Contact E-Mail" error={fieldErrors.contact_email}>
                       <div style={{ position:'relative' }}>
                         <input type="email" value={form.contact_email}
@@ -1134,7 +1216,6 @@ export default function VendorMaster() {
                       )}
                     </Field>
 
-                    {/* GST No */}
                     <Field label="GST No" error={fieldErrors.gst_no}>
                       <div style={{ position:'relative' }}>
                         <input type="text" value={form.gst_no}
@@ -1155,7 +1236,6 @@ export default function VendorMaster() {
                   </div>
                 )}
 
-                {/* ── MSME Details ── */}
                 <SectionHead title="MSME Details" open={sec.msme} onToggle={() => toggle('msme')} />
                 {sec.msme && (
                   <div className="vm-grid">
@@ -1183,7 +1263,6 @@ export default function VendorMaster() {
                   </div>
                 )}
 
-                {/* ── Attachments ── */}
                 <SectionHead title="Attachments" open={sec.attach} onToggle={() => toggle('attach')} />
                 {sec.attach && (
                   <div style={s.subSection}>
@@ -1215,9 +1294,8 @@ export default function VendorMaster() {
                   </div>
                 )}
 
-              </div>{/* end modal-body */}
+              </div>
 
-              {/* Footer */}
               <div className="vm-modal-footer">
                 <button className="vm-btn-cancel" onClick={() => setShowForm(false)}>Cancel</button>
                 <button className="vm-btn-save" onClick={handleSave} disabled={saving}>
@@ -1240,8 +1318,7 @@ export default function VendorMaster() {
 const s: Record<string, React.CSSProperties> = {
   closeBtn: {
     background:'none', border:'none', padding:'0 4px', cursor:'pointer',
-    display:'flex', alignItems:'center', justifyContent:'center', opacity:0.85,
-    touchAction:'manipulation',
+    display:'flex', alignItems:'center', justifyContent:'center', opacity:0.85, touchAction:'manipulation',
   },
   errorBanner: {
     display:'flex', alignItems:'center', gap:8,
@@ -1256,17 +1333,14 @@ const s: Record<string, React.CSSProperties> = {
   input: {
     width:'100%', padding:'8px 12px', borderRadius:8,
     border:'1px solid #cbd5e1', fontSize:13, color:'#1e293b',
-    outline:'none', boxSizing:'border-box', transition:'border-color 0.15s',
-    background:'#fff',
+    outline:'none', boxSizing:'border-box', transition:'border-color 0.15s', background:'#fff',
   },
   inputError: {
-    border:'1.5px solid #fca5a5',
-    background:'#fff5f5',
+    border:'1.5px solid #fca5a5', background:'#fff5f5',
     boxShadow:'0 0 0 3px rgba(239,68,68,0.08)',
   },
   inputSuccess: {
-    border:'1.5px solid #86efac',
-    background:'#f0fdf4',
+    border:'1.5px solid #86efac', background:'#f0fdf4',
   },
   sectionHead: {
     display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -1290,7 +1364,6 @@ const s: Record<string, React.CSSProperties> = {
   delRowBtn: {
     background:'#fff1f2', color:'#ef4444', border:'1px solid #fca5a5',
     width:30, height:30, borderRadius:7, cursor:'pointer',
-    display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-    touchAction:'manipulation',
+    display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, touchAction:'manipulation',
   },
 };

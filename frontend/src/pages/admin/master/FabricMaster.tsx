@@ -28,6 +28,9 @@ import {
   Wind,
   Wrench,
   Check,
+  Download,
+  FileSpreadsheet,
+  Printer,
 } from 'lucide-react';
 
 import {
@@ -260,6 +263,214 @@ const HsnDropdown: React.FC<HsnDropdownProps> = ({ value, onChange, hsnCodes, hs
   );
 };
 
+// ─── Export Dropdown ──────────────────────────────────────────────────────────
+interface FabricExportRow {
+  id?: number;
+  fabric_id?: string;
+  sort_no?: string;
+  reed?: string | number;
+  pick?: string | number;
+  width?: string | number;
+  body_weave_pattern?: string;
+  weave?: string;
+  design?: string;
+  hsn_code?: string | number;
+  f_gsm?: string | number;
+  fabric_wt_per_mtr?: string | number;
+  warp_wt_per_mtr?: string | number;
+  warp_wt_per_mtr_wc?: string | number;
+  weft_wt_per_mtr?: string | number;
+  construction?: string;
+  status?: string;
+  warp_details?: WarpDetail[];
+  weft_details?: WeftDetail[];
+}
+
+function ExportDropdown({
+  fetchAll,
+  pushToast,
+}: {
+  fetchAll: () => Promise<FabricExportRow[]>;
+  pushToast: (type: ToastType, title: string, msg?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const HEADERS = [
+    'Fabric ID', 'Sort No', 'Reed', 'Pick', 'Width (in)', 'Body Weave Pattern',
+    'Weave', 'Design', 'HSN Code', 'F.GSM', 'Fabric Wt/Mtr',
+    'Warp Wt/Mtr', 'Warp Wt/Mtr WC', 'Weft Wt/Mtr', 'Construction', 'Status',
+  ];
+
+  const getRow = (f: FabricExportRow): string[] => [
+    String(f.fabric_id ?? ''),
+    String(f.sort_no ?? ''),
+    String(f.reed ?? ''),
+    String(f.pick ?? ''),
+    String(f.width ?? ''),
+    String(f.body_weave_pattern ?? ''),
+    String(f.weave ?? ''),
+    String(f.design ?? ''),
+    String(f.hsn_code ?? ''),
+    String(f.f_gsm ?? ''),
+    String(f.fabric_wt_per_mtr ?? ''),
+    String(f.warp_wt_per_mtr ?? ''),
+    String(f.warp_wt_per_mtr_wc ?? ''),
+    String(f.weft_wt_per_mtr ?? ''),
+    String(f.construction ?? ''),
+    String(f.status ?? ''),
+  ];
+
+  const exportCSV = async () => {
+    setOpen(false);
+    try {
+      const data = await fetchAll();
+      const rows = data.map(getRow);
+      const csv = [
+        HEADERS.join(','),
+        ...rows.map(r => r.map(v => `"${v.replace(/"/g, '""')}"`).join(',')),
+      ].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `fabrics_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click(); URL.revokeObjectURL(url);
+      pushToast('success', 'CSV Exported', `${data.length} fabric records downloaded.`);
+    } catch {
+      pushToast('error', 'Export Failed', 'Could not export CSV.');
+    }
+  };
+
+  const exportExcel = async () => {
+    setOpen(false);
+    try {
+      const data = await fetchAll();
+      const ths = HEADERS.map(h => `<th>${h}</th>`).join('');
+      const trs = data.map((f, i) => {
+        const bg = i % 2 === 0 ? '#fff' : '#f0fdfa';
+        return `<tr style="background:${bg}">${getRow(f).map(v => `<td>${v}</td>`).join('')}</tr>`;
+      }).join('');
+      const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"/>
+<style>
+  th { background:#0d9488; color:#fff; font-weight:bold; padding:7px 10px; border:1px solid #ccc; font-size:12px; }
+  td { padding:6px 10px; border:1px solid #e2e8f0; font-size:11px; }
+</style></head>
+<body><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table></body></html>`;
+      const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `fabrics_${new Date().toISOString().slice(0, 10)}.xls`;
+      a.click(); URL.revokeObjectURL(url);
+      pushToast('success', 'Excel Exported', `${data.length} fabric records downloaded.`);
+    } catch {
+      pushToast('error', 'Export Failed', 'Could not export Excel.');
+    }
+  };
+
+  const printTable = async () => {
+    setOpen(false);
+    try {
+      const data = await fetchAll();
+      // Condensed columns for print
+      const printHeaders = ['Fabric ID', 'Sort No', 'Reed', 'Pick', 'Width', 'Weave Pattern', 'HSN', 'F.GSM', 'Fabric Wt', 'Status'];
+      const ths = printHeaders.map(h => `<th>${h}</th>`).join('');
+      const trs = data.map((f, i) => {
+        const bg = i % 2 === 0 ? '#fff' : '#f0fdfa';
+        const cells = [
+          f.fabric_id ?? '—',
+          f.sort_no ?? '—',
+          f.reed ?? '—',
+          f.pick ?? '—',
+          f.width ? `${f.width}"` : '—',
+          f.body_weave_pattern ?? '—',
+          f.hsn_code ? String(f.hsn_code) : '—',
+          f.f_gsm ?? '—',
+          f.fabric_wt_per_mtr ?? '—',
+          f.status ?? '—',
+        ].map(v => `<td>${v}</td>`).join('');
+        return `<tr style="background:${bg}">${cells}</tr>`;
+      }).join('');
+
+      const win = window.open('', '_blank', 'width=1100,height=750');
+      if (!win) { pushToast('warning', 'Popup Blocked', 'Allow popups to use Print Table.'); return; }
+      win.document.write(`<!DOCTYPE html><html><head><title>Fabric Master</title>
+<style>
+  body { font-family: 'Plus Jakarta Sans', Arial, sans-serif; font-size: 11px; color: #1e293b; margin: 0; padding: 20px; }
+  h2 { margin: 0 0 2px; font-size: 17px; color: #0d9488; font-weight: 800; }
+  p  { margin: 0 0 14px; font-size: 11px; color: #64748b; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #0d9488; color: #fff; padding: 8px 10px; text-align: left; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
+  tr:nth-child(even) td { background: #f0fdfa; }
+  @media print { body { padding: 8px; } button { display: none; } }
+</style></head>
+<body>
+  <h2>Fabric Master</h2>
+  <p>Exported on ${new Date().toLocaleString()} &nbsp;·&nbsp; Total: ${data.length} fabric${data.length !== 1 ? 's' : ''}</p>
+  <table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>
+  <script>window.onload = () => { window.print(); }<\/script>
+</body></html>`);
+      win.document.close();
+    } catch {
+      pushToast('error', 'Print Failed', 'Could not open print window.');
+    }
+  };
+
+  const items = [
+    { label: 'Export as CSV',   icon: <FileText       size={14} />, color: '#0d9488', action: exportCSV   },
+    { label: 'Export as Excel', icon: <FileSpreadsheet size={14} />, color: '#16a34a', action: exportExcel },
+    { label: 'Print Table',     icon: <Printer        size={14} />, color: '#2563eb', action: printTable  },
+  ];
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        className="fm-export-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Download size={14} />
+        Export
+        <ChevronDown
+          size={13}
+          style={{
+            marginLeft: 2,
+            transition: 'transform 0.2s',
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+          }}
+        />
+      </button>
+
+      {open && (
+        <div className="fm-export-menu" role="menu">
+          <p className="fm-export-menu-title">EXPORT / PRINT</p>
+          {items.map(item => (
+            <button
+              key={item.label}
+              className="fm-export-item"
+              onClick={item.action}
+              role="menuitem"
+            >
+              <span style={{ color: item.color, display: 'flex', alignItems: 'center' }}>{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Attachment { name: string; url: string; size?: number; file?: File; }
 interface FabricExt extends Fabric {
@@ -267,7 +478,6 @@ interface FabricExt extends Fabric {
   on_pick:            string;
   wastage:            string;
   f_gsm:              string;
-  // hsn_code is VARCHAR(20) — store and send as plain string
   hsn_code:           string;
   attachments:        Attachment[];
 }
@@ -880,22 +1090,13 @@ export default function FabricMaster() {
         const result = detailed[i];
         if (result.status === 'fulfilled' && result.value) {
           const fullRow = result.value as unknown as FabricExt;
-          // ── FIX: Normalise hsn_code to string when loading list ──
           const hsnRaw = fullRow.hsn_code ?? row.hsn_code;
           const hsnStr = hsnRaw !== null && hsnRaw !== undefined ? String(hsnRaw).trim() : '';
-          return {
-            ...row,
-            ...fullRow,
-            id: row.id,
-            fabric_id: row.fabric_id,
-            status: row.status,
-            hsn_code: hsnStr,
-          };
+          return { ...row, ...fullRow, id: row.id, fabric_id: row.fabric_id, status: row.status, hsn_code: hsnStr };
         }
         return {
           ...row,
-          hsn_code: row.hsn_code !== null && row.hsn_code !== undefined
-            ? String(row.hsn_code).trim() : '',
+          hsn_code: row.hsn_code !== null && row.hsn_code !== undefined ? String(row.hsn_code).trim() : '',
         };
       });
       setFabrics(merged);
@@ -904,6 +1105,22 @@ export default function FabricMaster() {
       pushToast('error', 'Load Failed', 'Could not fetch fabrics.');
     }
     setLoading(false);
+  };
+
+  // ── Fetch ALL for export (respects current search/filter) ─────────────────
+  const fetchAllForExport = async (): Promise<FabricExportRow[]> => {
+    try {
+      const data = await listFabrics({ search, page: 1, limit: 99999, status: filterSt });
+      const rows = (data.data ?? []) as FabricExt[];
+      return rows.map(f => ({
+        ...f,
+        construction: safeConstruction(f),
+        hsn_code: f.hsn_code !== null && f.hsn_code !== undefined ? String(f.hsn_code).trim() : '',
+      }));
+    } catch {
+      pushToast('error', 'Export Failed', 'Could not fetch all fabrics for export.');
+      return [];
+    }
   };
 
   useEffect(() => { loadFabrics(); }, [search, filterSt, page, pageSize]);
@@ -917,21 +1134,13 @@ export default function FabricMaster() {
     setForm(BLANK); setEditId(null); setError(''); setErrorDetail(''); setShowForm(true);
   };
 
-  // ── FIX: openEdit — use hsn_code string directly, restore warp/weft ──────
   const openEdit = async (id: number) => {
     try {
       const data = await getFabric(id);
-
-    
-
       const rawWarp: WarpDetail[] = Array.isArray((data as unknown as FabricExt).warp_details)
-        ? (data as unknown as FabricExt).warp_details
-        : [];
+        ? (data as unknown as FabricExt).warp_details : [];
       const rawWeft: WeftDetail[] = Array.isArray((data as unknown as FabricExt).weft_details)
-        ? (data as unknown as FabricExt).weft_details
-        : [];
-
-  
+        ? (data as unknown as FabricExt).weft_details : [];
 
       const { warpDetails, weftDetails } = restoreYarnLabels(rawWarp, rawWeft, yarns);
 
@@ -944,14 +1153,9 @@ export default function FabricMaster() {
         return y ? { ...row, _selected_type: y.yarn_type ?? y.category ?? '' } : { ...row };
       });
 
-      // ── FIX: hsn_code is VARCHAR(20) — use string value directly ──
       const rawHsn  = (data as unknown as FabricExt).hsn_code;
-      // Convert whatever the server sends (int or string) to a clean string
       const codeStr = rawHsn !== null && rawHsn !== undefined ? String(rawHsn).trim() : '';
 
-     
-
-      // If code not in dropdown yet, inject it so it shows immediately
       if (codeStr && !hsnCodes.find(h => h.hsn_code === codeStr)) {
         setHsnCodes(prev => [{ id: -1, hsn_code: codeStr, description: '(saved)' }, ...prev]);
       }
@@ -959,13 +1163,11 @@ export default function FabricMaster() {
       setForm({
         ...BLANK,
         ...(data as unknown as FabricExt),
-        // ── FIX: store plain string — no integer conversion ──
         hsn_code:     codeStr,
         warp_details: warpWithType as WarpDetail[],
         weft_details: weftWithType as WeftDetail[],
         attachments:  Array.isArray((data as unknown as FabricExt).attachments)
-          ? (data as unknown as FabricExt).attachments
-          : [],
+          ? (data as unknown as FabricExt).attachments : [],
         construction: '',
       });
       setEditId(id); setError(''); setErrorDetail(''); setShowForm(true);
@@ -975,7 +1177,6 @@ export default function FabricMaster() {
     }
   };
 
-  // Re-restore yarn labels when yarns finish loading after form is open
   useEffect(() => {
     if (!showForm || yarns.length === 0) return;
     setForm(f => {
@@ -1022,53 +1223,32 @@ export default function FabricMaster() {
 
       const formWithLabels: FabricExt = { ...form, warp_details: restoredWarp, weft_details: restoredWeft };
       const freshConstruction = buildConstruction(formWithLabels);
-
-      // ── FIX: hsn_code is VARCHAR(20) — send the string value directly ──
-      // Do NOT convert to integer ID. The DB column is now varchar(20).
-      const hsnCodeValue = formWithLabels.hsn_code
-        ? String(formWithLabels.hsn_code).trim()
-        : null;
-
-  
+      const hsnCodeValue = formWithLabels.hsn_code ? String(formWithLabels.hsn_code).trim() : null;
 
       const payload = {
         ...formWithLabels,
         construction: freshConstruction,
         attachments:  undefined,
-
-        // ── FIX: send varchar string directly — no integer lookup ──
         hsn_code: hsnCodeValue,
-
-        // varchar(20) columns
         reed: safeStr(formWithLabels.reed),
         pick: safeStr(formWithLabels.pick),
-
-        // decimal columns
         on_pick:     toFloat(formWithLabels.on_pick),
         onloom_reed: toFloat(formWithLabels.onloom_reed),
         width:       toFloat(formWithLabels.width),
         wastage:     safeFloat(formWithLabels.wastage),
-
-        // int UN NOT NULL
         total_ends:    safeInt(formWithLabels.total_ends),
         selvedge_ends: safeInt(formWithLabels.selvedge_ends),
         body_ends:     safeInt(formWithLabels.body_ends),
         reed_space:    toFloat(formWithLabels.reed_space),
-
-        // decimal(14,6) weight columns
         warp_wt_per_mtr:    toFloat(formWithLabels.warp_wt_per_mtr),
         warp_wt_per_mtr_wc: toFloat(formWithLabels.warp_wt_per_mtr_wc),
         weft_wt_per_mtr:    toFloat(formWithLabels.weft_wt_per_mtr),
         fabric_wt_per_mtr:  toFloat(formWithLabels.fabric_wt_per_mtr),
-
-        // decimal(10,4)
         f_gsm: toFloat(formWithLabels.f_gsm),
-
         sort_no:            formWithLabels.sort_no ? safeStr(formWithLabels.sort_no) : null,
         body_weave_pattern: safeStr(formWithLabels.body_weave_pattern),
         weave:              safeStr(formWithLabels.weave),
         design:             safeStr(formWithLabels.design),
-
         warp_details: formWithLabels.warp_details.map(row => {
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { _selected_type, ...rest } = row as WarpRow;
@@ -1083,7 +1263,6 @@ export default function FabricMaster() {
             warp_count:    safeStr(rest.warp_count),
           };
         }),
-
         weft_details: formWithLabels.weft_details.map(row => {
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { _selected_type, ...rest } = row as WeftRow;
@@ -1097,8 +1276,6 @@ export default function FabricMaster() {
           };
         }),
       };
-
-      
 
       if (editId) {
         await updateFabric(editId, payload as unknown as Fabric);
@@ -1197,6 +1374,7 @@ export default function FabricMaster() {
         @keyframes spin        { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
         @keyframes cardSlideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
         @keyframes ddSlide     { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes menuIn      { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
 
         .fm-spin { display:inline-block; width:16px; height:16px; border:2px solid #e2e8f0; border-top-color:#0d9488; border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
         .fm-spin-sm { display:inline-block; width:12px; height:12px; border:1.5px solid #e2e8f0; border-top-color:#0d9488; border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:6px; }
@@ -1204,8 +1382,49 @@ export default function FabricMaster() {
         .fm-page-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; flex-wrap:wrap; gap:10px; }
         .fm-page-header h1 { margin:0; font-size:20px; font-weight:800; color:#1e293b; letter-spacing:-0.4px; }
         .fm-page-header p  { margin:3px 0 0; font-size:13px; color:#64748b; }
-        .fm-add-btn { display:flex; align-items:center; gap:6px; background:#0d9488; color:#fff; border:none; border-radius:9px; padding:10px 18px; font-size:13.5px; font-weight:700; cursor:pointer; font-family:inherit; box-shadow:0 3px 10px rgba(13,148,136,0.3); white-space:nowrap; flex-shrink:0; touch-action:manipulation; transition:background 0.15s, transform 0.1s; }
+
+        /* Header action group */
+        .fm-header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+
+        .fm-add-btn { display:flex; align-items:center; gap:6px; background:#0d9488; color:#fff; border:none; border-radius:9px; padding:10px 18px; font-size:13.5px; font-weight:700; cursor:pointer; font-family:inherit; box-shadow:0 3px 10px rgba(13,148,136,0.3); white-space:nowrap; touch-action:manipulation; transition:background 0.15s, transform 0.1s; }
         .fm-add-btn:hover { background:#0f766e; transform:translateY(-1px); }
+
+        /* Export button */
+        .fm-export-btn {
+          display:flex; align-items:center; gap:6px;
+          background:#fff; color:#374151;
+          border:1.5px solid #d1d9e6; border-radius:9px;
+          padding:9px 15px; font-size:13px; font-weight:600;
+          cursor:pointer; font-family:inherit;
+          white-space:nowrap; touch-action:manipulation;
+          box-shadow:0 1px 4px rgba(0,0,0,0.06);
+          transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+        }
+        .fm-export-btn:hover { border-color:#0d9488; color:#0d9488; box-shadow:0 2px 8px rgba(13,148,136,0.14); }
+
+        /* Export dropdown menu */
+        .fm-export-menu {
+          position:absolute; top:calc(100% + 6px); right:0;
+          background:#fff; border:1px solid #e2e8f0;
+          border-radius:12px; padding:8px;
+          min-width:195px; z-index:3000;
+          box-shadow:0 8px 28px rgba(0,0,0,0.12);
+          animation:menuIn 0.18s ease-out;
+        }
+        .fm-export-menu-title {
+          font-size:10px; font-weight:700; color:#94a3b8;
+          letter-spacing:0.08em; text-transform:uppercase;
+          padding:4px 8px 6px; margin:0;
+        }
+        .fm-export-item {
+          display:flex; align-items:center; gap:10px;
+          width:100%; padding:9px 10px; border:none; background:none;
+          border-radius:8px; cursor:pointer; font-size:13px; font-weight:500;
+          color:#374151; font-family:inherit;
+          text-align:left; transition:background 0.12s;
+          touch-action:manipulation;
+        }
+        .fm-export-item:hover { background:#f0fdfa; color:#0d9488; }
 
         .fm-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
         .fm-search-wrap { position:relative; flex:1; min-width:180px; max-width:100%; }
@@ -1417,7 +1636,12 @@ export default function FabricMaster() {
             </h1>
             <p>{total} fabric{total !== 1 ? 's' : ''} registered</p>
           </div>
-          <button className="fm-add-btn" onClick={openCreate}><Plus size={15} /> New Fabric</button>
+
+          {/* Action buttons */}
+          <div className="fm-header-actions">
+            <ExportDropdown fetchAll={fetchAllForExport} pushToast={pushToast} />
+            <button className="fm-add-btn" onClick={openCreate}><Plus size={15} /> New Fabric</button>
+          </div>
         </div>
 
         {/* TOOLBAR */}
@@ -1470,7 +1694,6 @@ export default function FabricMaster() {
                   </td></tr>
                 ) : fabrics.map((f, i) => {
                   const constructionDisplay = safeConstruction(f);
-                  // ── FIX: hsn_code is already a string — display directly ──
                   const hsnDisplay = f.hsn_code ? String(f.hsn_code).trim() : '';
                   return (
                     <tr key={f.id}>
@@ -1592,7 +1815,7 @@ export default function FabricMaster() {
                       <input type="text" value={String(form.design ?? '')} onChange={e => set('design', e.target.value)} placeholder="e.g. STRIPE, CHECK…" style={s.input} />
                     </Field>
 
-                    {/* ── HSN Dropdown — VARCHAR(20), store & send string directly ── */}
+                    {/* HSN Dropdown */}
                     <Field label="HSN Code">
                       <HsnDropdown
                         value={String(form.hsn_code ?? '')}

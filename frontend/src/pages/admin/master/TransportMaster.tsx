@@ -1,11 +1,6 @@
 // frontend/src/pages/admin/TransportMaster.tsx
 // Transport Master — Fully Responsive (Mobile → Tablet → Laptop → Desktop)
-// Updated to CustomerMaster format:
-//   ✓ Full India States & Districts (all 28 states + 8 UTs)
-//   ✓ AddressBlock-style styled address panel (MapPin header, blue accent border)
-//   ✓ Email: inline ✓/✗ icon inside input + FieldError below + hint pill
-//   ✓ Contact No: FieldError below + hint pill ("10–13 digits required")
-//   ✓ GST (15): counter inside input right + CheckCircle when valid + hint pill + inputSuccess/inputError borders
+// Updated: Added Export menu (CSV / Excel / Print Table)
 
 import {
   useEffect, useRef, useState, useCallback,
@@ -13,7 +8,7 @@ import {
 import {
   Plus, Search, X, Upload, FileText, ChevronDown, ChevronUp,
   Loader2, Eye, AlertCircle, CheckCircle2, Info, AlertTriangle,
-  Truck, Mail, MapPin,
+  Truck, Mail, MapPin, Download, Printer, Sheet,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -156,6 +151,121 @@ function SectionHead({ title, open, onToggle }: { title: string; open: boolean; 
       {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
     </div>
   );
+}
+
+// ─── Export Menu Component ────────────────────────────────────────────────────
+
+function ExportMenu({
+  transports,
+  onExportCSV,
+  onExportExcel,
+  onPrint,
+}: {
+  transports: Transport[];
+  onExportCSV: () => void;
+  onExportExcel: () => void;
+  onPrint: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        className="tm-export-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        <Download size={14} />
+        Export
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </button>
+
+      {open && (
+        <div className="tm-export-dropdown">
+          <p className="tm-export-label">EXPORT / PRINT</p>
+
+          <button
+            className="tm-export-item"
+            onClick={() => { onExportCSV(); setOpen(false); }}
+          >
+            <span className="tm-export-icon tm-export-icon-csv">
+              <FileText size={14} />
+            </span>
+            Export as CSV
+          </button>
+
+          <button
+            className="tm-export-item"
+            onClick={() => { onExportExcel(); setOpen(false); }}
+          >
+            <span className="tm-export-icon tm-export-icon-excel">
+              {/* Sheet icon fallback if not in lucide version */}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>
+              </svg>
+            </span>
+            Export as Excel
+          </button>
+
+          <div className="tm-export-divider" />
+
+          <button
+            className="tm-export-item"
+            onClick={() => { onPrint(); setOpen(false); }}
+          >
+            <span className="tm-export-icon tm-export-icon-print">
+              <Printer size={14} />
+            </span>
+            Print Table
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+const CSV_COLUMNS: { key: keyof Transport; label: string }[] = [
+  { key: 'transport_code',    label: 'Transport Code' },
+  { key: 'transport_company', label: 'Company Name' },
+  { key: 'transport_mode',    label: 'Mode' },
+  { key: 'transport_type',    label: 'Type' },
+  { key: 'contact_no',        label: 'Contact No' },
+  { key: 'email',             label: 'Email' },
+  { key: 'gst_no',            label: 'GST No' },
+  { key: 'state',             label: 'State' },
+  { key: 'district',          label: 'District' },
+  { key: 'pin_code',          label: 'Pin Code' },
+  { key: 'status',            label: 'Status' },
+];
+
+function toCSV(rows: Transport[]): string {
+  const header = CSV_COLUMNS.map(c => `"${c.label}"`).join(',');
+  const lines  = rows.map(r =>
+    CSV_COLUMNS.map(c => `"${String(r[c.key] ?? '').replace(/"/g, '""')}"`).join(',')
+  );
+  return [header, ...lines].join('\r\n');
+}
+
+function downloadBlob(content: string, filename: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Full India States & Districts (all 28 states + 8 UTs) ───────────────────
@@ -469,6 +579,53 @@ export default function TransportMaster() {
     return () => { document.body.style.overflow = ''; };
   }, [showForm]);
 
+  // ── Export handlers ───────────────────────────────────────────────────────
+
+  const handleExportCSV = () => {
+    const csv = toCSV(transports);
+    downloadBlob(csv, 'transports.csv', 'text/csv;charset=utf-8;');
+    pushToast('success', 'CSV Exported', `${transports.length} record(s) downloaded.`);
+  };
+
+  const handleExportExcel = () => {
+    // Tab-separated values with .xls extension — opens in Excel without a library dependency
+    const tsv = [
+      CSV_COLUMNS.map(c => c.label).join('\t'),
+      ...transports.map(r => CSV_COLUMNS.map(c => String(r[c.key] ?? '')).join('\t')),
+    ].join('\r\n');
+    downloadBlob(tsv, 'transports.xls', 'application/vnd.ms-excel;charset=utf-8;');
+    pushToast('success', 'Excel Exported', `${transports.length} record(s) downloaded.`);
+  };
+
+  const handlePrint = () => {
+    const rows = transports.map(r =>
+      `<tr>${CSV_COLUMNS.map(c => `<td>${String(r[c.key] ?? '')}</td>`).join('')}</tr>`
+    ).join('');
+    const html = `
+      <html><head><title>Transport Master</title>
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 12px; }
+        h2   { margin-bottom: 8px; color: #1e293b; }
+        table { border-collapse: collapse; width: 100%; }
+        th { background: #2563eb; color: #fff; padding: 7px 10px; text-align: left; font-size: 11px; }
+        td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
+        tr:nth-child(even) td { background: #f8fafc; }
+        @media print { @page { margin: 15mm; } }
+      </style></head>
+      <body>
+        <h2>🚛 Transport Master</h2>
+        <p style="font-size:11px;color:#64748b;margin-bottom:12px;">
+          Exported on ${new Date().toLocaleString()} — ${transports.length} record(s)
+        </p>
+        <table>
+          <thead><tr>${CSV_COLUMNS.map(c => `<th>${c.label}</th>`).join('')}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); w.print(); }
+  };
+
   // ── Open ──────────────────────────────────────────────────────────────────
 
   const openCreate = () => {
@@ -561,7 +718,6 @@ export default function TransportMaster() {
     });
   };
 
-  // Districts from full INDIA_STATES map
   const stateDistricts = INDIA_STATES[form.state] ?? [];
 
   // ── Pagination ────────────────────────────────────────────────────────────
@@ -589,8 +745,9 @@ export default function TransportMaster() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; }
-        @keyframes toastIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
-        @keyframes spin     { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+        @keyframes toastIn    { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+        @keyframes spin       { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+        @keyframes dropdownIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
 
         .tm-wrap { font-family:'DM Sans',sans-serif; font-size:14px; color:#1e293b; }
 
@@ -600,8 +757,56 @@ export default function TransportMaster() {
         .tm-page-header p  { margin:3px 0 0; font-size:13px; color:#64748b; }
         @media(min-width:576px){ .tm-page-header h1 { font-size:22px; } }
 
+        .tm-header-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+
         .tm-add-btn { display:flex; align-items:center; gap:6px; background:#2563eb; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 6px rgba(37,99,235,0.3); white-space:nowrap; flex-shrink:0; touch-action:manipulation; }
         .tm-add-btn:hover { background:#1d4ed8; }
+
+        /* ── Export button ── */
+        .tm-export-btn {
+          display:flex; align-items:center; gap:6px;
+          background:#fff; color:#16a34a;
+          border:1.5px solid #16a34a; border-radius:8px;
+          padding:8px 14px; font-size:13px; font-weight:600;
+          cursor:pointer; font-family:'DM Sans',sans-serif;
+          white-space:nowrap; flex-shrink:0; touch-action:manipulation;
+          transition: background 0.15s, box-shadow 0.15s;
+        }
+        .tm-export-btn:hover { background:#f0fdf4; box-shadow:0 2px 6px rgba(22,163,74,0.18); }
+
+        /* ── Export dropdown ── */
+        .tm-export-dropdown {
+          position:absolute; top:calc(100% + 6px); right:0;
+          min-width:190px;
+          background:#fff; border:1px solid #e2e8f0; border-radius:10px;
+          box-shadow:0 8px 24px rgba(0,0,0,0.12);
+          padding:6px 0; z-index:3000;
+          animation:dropdownIn 0.18s ease-out;
+          font-family:'DM Sans',sans-serif;
+        }
+        .tm-export-label {
+          padding:6px 14px 4px;
+          font-size:10px; font-weight:700; color:#94a3b8;
+          letter-spacing:0.07em; margin:0;
+          text-transform:uppercase;
+        }
+        .tm-export-item {
+          display:flex; align-items:center; gap:10px;
+          width:100%; padding:9px 14px;
+          background:none; border:none; cursor:pointer;
+          font-size:13px; font-weight:500; color:#1e293b;
+          font-family:'DM Sans',sans-serif;
+          text-align:left; transition:background 0.12s;
+        }
+        .tm-export-item:hover { background:#f8fafc; }
+        .tm-export-divider { height:1px; background:#f1f5f9; margin:4px 0; }
+        .tm-export-icon {
+          width:26px; height:26px; border-radius:6px;
+          display:flex; align-items:center; justify-content:center; flex-shrink:0;
+        }
+        .tm-export-icon-csv   { background:#fef3c7; color:#92400e; }
+        .tm-export-icon-excel { background:#dcfce7; color:#16a34a; }
+        .tm-export-icon-print { background:#eff6ff; color:#2563eb; }
 
         /* ── Toolbar ── */
         .tm-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
@@ -679,7 +884,7 @@ export default function TransportMaster() {
         .tm-btn-save { display:flex; align-items:center; gap:6px; padding:9px 20px; border:none; background:#16a34a; color:#fff; border-radius:8px; font-size:13px; font-weight:700; cursor:pointer; font-family:'DM Sans',sans-serif; box-shadow:0 2px 6px rgba(22,163,74,0.3); touch-action:manipulation; }
         .tm-btn-save:disabled { opacity:0.7; cursor:not-allowed; }
 
-        /* ── Hint pill (CustomerMaster style) ── */
+        /* ── Hint pill ── */
         .tm-hint-pill { display:inline-flex; align-items:center; gap:4px; font-size:10px; color:#64748b; background:#f8fafc; border:1px solid #e2e8f0; border-radius:20px; padding:2px 8px; margin-top:4px; }
 
         /* ── Focus ring ── */
@@ -699,7 +904,16 @@ export default function TransportMaster() {
             <h1><Truck size={20} style={{ color: '#2563eb' }} /> Transport Master</h1>
             <p>{total} transport{total !== 1 ? 's' : ''} registered</p>
           </div>
-          <button className="tm-add-btn" onClick={openCreate}><Plus size={15} /> New Transport</button>
+          <div className="tm-header-actions">
+            {/* ── EXPORT MENU ── */}
+            <ExportMenu
+              transports={transports}
+              onExportCSV={handleExportCSV}
+              onExportExcel={handleExportExcel}
+              onPrint={handlePrint}
+            />
+            <button className="tm-add-btn" onClick={openCreate}><Plus size={15} /> New Transport</button>
+          </div>
         </div>
 
         {/* ── TOOLBAR ── */}
@@ -877,7 +1091,7 @@ export default function TransportMaster() {
                   </div>
                 )}
 
-                {/* ══ ADDRESS DETAILS — CustomerMaster AddressBlock style ══ */}
+                {/* ══ ADDRESS DETAILS ══ */}
                 <SectionHead title='Address Details' open={sec.address} onToggle={() => toggle('address')} />
                 {sec.address && (
                   <div style={{
@@ -887,7 +1101,6 @@ export default function TransportMaster() {
                     background: '#fff',
                     marginTop: 10,
                   }}>
-                    {/* Accent header bar */}
                     <div style={{
                       background: '#eff6ff',
                       borderBottom: '1px solid #bfdbfe',
@@ -903,11 +1116,9 @@ export default function TransportMaster() {
                       }}>Address Details</span>
                     </div>
 
-                    {/* Fields grid */}
                     <div style={{ padding: '14px 16px' }}>
                       <div className="tm-grid">
 
-                        {/* Full address — spans all columns */}
                         <div className="tm-col-full">
                           <Field label='Address'>
                             <textarea
@@ -919,7 +1130,6 @@ export default function TransportMaster() {
                           </Field>
                         </div>
 
-                        {/* Pin Code */}
                         <Field label='Pin Code'>
                           <input
                             type='text'
@@ -932,7 +1142,6 @@ export default function TransportMaster() {
                           />
                         </Field>
 
-                        {/* State — full INDIA_STATES */}
                         <Field label='State'>
                           <select
                             value={form.state}
@@ -944,7 +1153,6 @@ export default function TransportMaster() {
                           </select>
                         </Field>
 
-                        {/* District — dependent on state */}
                         <Field label='District'>
                           <select
                             value={form.district}
@@ -963,14 +1171,12 @@ export default function TransportMaster() {
                           </select>
                         </Field>
 
-                        {/* Country */}
                         <Field label='Country'>
                           <select value={form.country} onChange={e => set('country', e.target.value)} style={s.input}>
                             {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
                         </Field>
 
-                        {/* GST No — CustomerMaster style: counter inside + hint pill + success/error border */}
                         <Field label='GST No' error={fieldErrors.gst_no}>
                           <div style={{ position: 'relative' }}>
                             <input
@@ -996,7 +1202,6 @@ export default function TransportMaster() {
                                     : {}),
                               }}
                             />
-                            {/* Counter badge inside the input right side */}
                             <span style={{
                               position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
                               display: 'flex', alignItems: 'center', gap: 3,
@@ -1009,13 +1214,11 @@ export default function TransportMaster() {
                               {form.gst_no.length === 15 && <CheckCircle2 size={12} color="#16a34a" />}
                             </span>
                           </div>
-                          {/* Hint pill — only shown when there is no error */}
                           {!fieldErrors.gst_no && (
                             <span className="tm-hint-pill">Exactly 15 alphanumeric characters</span>
                           )}
                         </Field>
 
-                        {/* MSME */}
                         <Field label='MSME'>
                           <select
                             value={form.msme}
@@ -1030,7 +1233,6 @@ export default function TransportMaster() {
                           </select>
                         </Field>
 
-                        {/* MSME Reg No — conditional */}
                         {form.msme === 'Yes' && (
                           <Field label='MSME Reg. No'>
                             <input
@@ -1047,12 +1249,11 @@ export default function TransportMaster() {
                   </div>
                 )}
 
-                {/* ══ CONTACT DETAILS — CustomerMaster format ══ */}
+                {/* ══ CONTACT DETAILS ══ */}
                 <SectionHead title='Contact Details' open={sec.contact} onToggle={() => toggle('contact')} />
                 {sec.contact && (
                   <div className="tm-grid">
 
-                    {/* ── E-Mail ID — inline ✓/✗ icon + hint pill ── */}
                     <Field label='E-Mail ID' error={fieldErrors.email}>
                       <div style={{ position: 'relative' }}>
                         <input
@@ -1071,7 +1272,6 @@ export default function TransportMaster() {
                                 : {}),
                           }}
                         />
-                        {/* Inline ✓ / ✗ icon */}
                         {form.email && (
                           <span style={{
                             position: 'absolute', right: 10, top: '50%',
@@ -1084,7 +1284,6 @@ export default function TransportMaster() {
                           </span>
                         )}
                       </div>
-                      {/* Hint pill — only when no error */}
                       {!fieldErrors.email && (
                         <span className="tm-hint-pill">
                           <Mail size={9} /> Must include @ and domain (e.g. user@gmail.com)
@@ -1092,19 +1291,16 @@ export default function TransportMaster() {
                       )}
                     </Field>
 
-                    {/* Contact Name */}
                     <Field label='Contact Name'>
                       <input type="text" value={form.contact_name}
                         onChange={e => set('contact_name', e.target.value)} style={s.input} />
                     </Field>
 
-                    {/* Designation */}
                     <Field label='Designation'>
                       <input type="text" value={form.designation} placeholder='e.g. Manager'
                         onChange={e => set('designation', e.target.value)} style={s.input} />
                     </Field>
 
-                    {/* ── Contact Number — FieldError + hint pill ── */}
                     <Field label='Contact Number' error={fieldErrors.contact_no}>
                       <input
                         type="tel"
@@ -1122,13 +1318,11 @@ export default function TransportMaster() {
                           ...(fieldErrors.contact_no ? s.inputError : {}),
                         }}
                       />
-                      {/* Hint pill — only when no error */}
                       {!fieldErrors.contact_no && (
                         <span className="tm-hint-pill">10–13 digits required</span>
                       )}
                     </Field>
 
-                    {/* ── Contact E-Mail — same pattern as E-Mail ── */}
                     <Field label='Contact E-Mail' error={fieldErrors.contact_email}>
                       <div style={{ position: 'relative' }}>
                         <input
