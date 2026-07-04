@@ -82,7 +82,7 @@
 //     the export output. colSpan on the loading/error/empty table rows
 //     bumped from 12 → 13 to match the new column count.
 //
-// CHANGES v11 (this pass):
+// CHANGES v11:
 //   • Added a "Quality" column to the main Customer Orders table (between
 //     Firm and Exp. Delivery) showing each order's `quality` value (the
 //     fabric quality / full construction description captured in the
@@ -93,6 +93,17 @@
 //   • colSpan on the loading/error/empty table rows bumped from 13 → 14
 //     to match the new column count.
 //
+// CHANGES v12 (this pass):
+//   • Added an "Order Date" range filter (From / To) to the toolbar, right
+//     next to the search box. Filtering is inclusive on both ends and is
+//     combined (AND) with the existing text search. A "Clear dates" (×)
+//     button appears once either date is set.
+//   • The same From/To range is now also applied when exporting to
+//     CSV/Excel/Print, so exports always match what's currently filtered
+//     on screen.
+//   • Changing either date resets pagination back to page 1, same as the
+//     text search already did.
+//
 // Export / Print menu in the page header (Export as CSV, Export as Excel,
 // Print Table) — same dropdown pattern as ProductionPlanningMaster.
 
@@ -100,7 +111,7 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import {
   FiSearch, FiX, FiChevronDown, FiCheck, FiPlus, FiEdit2, FiTrash2,
   FiAlertTriangle, FiChevronLeft, FiChevronRight, FiChevronsLeft, FiChevronsRight,
-  FiUser, FiTruck, FiFileText, FiPackage, FiRefreshCw, FiDownload,
+  FiUser, FiTruck, FiFileText, FiPackage, FiRefreshCw, FiDownload, FiCalendar,
 } from 'react-icons/fi';
 import { MdSyncAlt } from 'react-icons/md';
 import { BiSave } from 'react-icons/bi';
@@ -665,6 +676,9 @@ export default function UnifiedOrderManagement({ user }: Props) {
   const [tableLoading,  setTableLoading]  = useState(true);
   const [tableError,    setTableError]    = useState('');
   const [search,        setSearch]        = useState('');
+  // v12: Order Date range filter (From / To) — inclusive on both ends
+  const [dateFrom,      setDateFrom]      = useState('');
+  const [dateTo,        setDateTo]        = useState('');
   const [pageSize,      setPageSize]      = useState(10);
   const [currentPage,   setCurrentPage]   = useState(1);
   const [showCOModal,   setShowCOModal]   = useState(false);
@@ -937,7 +951,7 @@ export default function UnifiedOrderManagement({ user }: Props) {
   }, []);
 
   useEffect(() => { loadOrders(); fetchCustomers(); fetchAgents(); fetchPackageTypes(); fetchCertifications(); fetchTransports(); fetchHsnCodes(); fetchFabrics(); }, [loadOrders,fetchCustomers,fetchAgents,fetchPackageTypes,fetchCertifications,fetchTransports,fetchHsnCodes,fetchFabrics]);
-  useEffect(() => { setCurrentPage(1); }, [search]);
+  useEffect(() => { setCurrentPage(1); }, [search, dateFrom, dateTo]);
 
   const setCO = (key: keyof CustomerOrder) => (e: React.ChangeEvent<HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement>) => setCOForm(prev => ({...prev,[key]:e.target.value}));
 
@@ -1157,12 +1171,27 @@ export default function UnifiedOrderManagement({ user }: Props) {
     finally { setDeleting(false); }
   };
 
+  // ── v12: Order Date range filter helper ────────────────────────────────────
+  // Inclusive comparison on the 'YYYY-MM-DD' string form of order_date, so it
+  // works correctly regardless of what date/time format the API returns.
+  const inDateRange = (r: CustomerOrder): boolean => {
+    if (!dateFrom && !dateTo) return true;
+    const d = toDateStr(r.order_date);
+    if (!d) return false;
+    if (dateFrom && d < dateFrom) return false;
+    if (dateTo && d > dateTo) return false;
+    return true;
+  };
+  const clearDateFilter = () => { setDateFrom(''); setDateTo(''); };
+
   // ── Export / Print helpers ─────────────────────────────────────────────────
   const fetchAllOrdersForExport = async (): Promise<CustomerOrder[]> => {
     try {
       const qs = new URLSearchParams();
       if (user?.id != null) qs.set('employee_id', String(user.id));
       if (search.trim()) qs.set('search', search.trim());
+      if (dateFrom) qs.set('date_from', dateFrom);
+      if (dateTo) qs.set('date_to', dateTo);
       qs.set('limit', '10000');
       qs.set('page', '1');
       const url = `/api/order-bookings?${qs.toString()}`;
@@ -1170,7 +1199,9 @@ export default function UnifiedOrderManagement({ user }: Props) {
       if (!res) return [];
       const data = await res.json();
       const raw = data.data || data;
-      return (Array.isArray(raw) ? raw : []).map(normaliseOrder);
+      // Belt-and-braces: also apply the date filter client-side in case the
+      // backend doesn't support date_from/date_to yet.
+      return (Array.isArray(raw) ? raw : []).map(normaliseOrder).filter(inDateRange);
     } catch {
       return [];
     }
@@ -1291,7 +1322,9 @@ export default function UnifiedOrderManagement({ user }: Props) {
   };
 
   // ── Table filtering & pagination ──────────────────────────────────────────
-  const filtered   = orders.filter(r => [r.order_code,r.customer_name,r.po_no,r.transport,r.customer_state,str(r.customer_id)].some(v => (v||'').toLowerCase().includes(search.toLowerCase())));
+  const filtered   = orders
+    .filter(r => [r.order_code,r.customer_name,r.po_no,r.transport,r.customer_state,str(r.customer_id)].some(v => (v||'').toLowerCase().includes(search.toLowerCase())))
+    .filter(inDateRange);
   const totalPages = Math.max(1, Math.ceil(filtered.length/pageSize));
   const paginated  = filtered.slice((currentPage-1)*pageSize, currentPage*pageSize);
   const goTo       = (p: number) => setCurrentPage(Math.min(Math.max(1,p), totalPages));
@@ -1301,6 +1334,7 @@ export default function UnifiedOrderManagement({ user }: Props) {
   const obEnabled         = coForm.order_code.trim().length>0;
   const isDuplicateCode   = !editCOId && coForm.order_code.trim().length>0 && orders.some(o => o.order_code.trim().toLowerCase()===coForm.order_code.trim().toLowerCase());
   const isFromConversion  = !!(coForm as any)._conversionId;
+  const dateFilterActive  = !!(dateFrom || dateTo);
 
   // ═══════════════════════════════════════════════════════════════════════════
   return (
@@ -1321,6 +1355,16 @@ export default function UnifiedOrderManagement({ user }: Props) {
         .uom-search-icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #94a3b8; pointer-events: none; }
         .uom-search { width: 100%; padding: 8px 14px 8px 34px; border: 1px solid #dde3ec; border-radius: 9px; font-size: 13px; font-family: inherit; background: #fff; color: #1a2332; outline: none; transition: border 0.15s, box-shadow 0.15s; }
         .uom-search:focus { border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
+        .uom-date-filter { display: flex; align-items: center; gap: 6px; background: #fff; border: 1px solid #dde3ec; border-radius: 9px; padding: 5px 10px; flex-wrap: wrap; }
+        .uom-date-filter.active { border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,0.08); background: #f8fbff; }
+        .uom-date-filter-icon { color: #94a3b8; flex-shrink: 0; display: flex; align-items: center; }
+        .uom-date-filter.active .uom-date-filter-icon { color: #1a56db; }
+        .uom-date-filter-label { font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+        .uom-date-input { border: 1px solid #dde3ec; border-radius: 7px; padding: 5px 8px; font-size: 12.5px; font-family: inherit; background: #fff; color: #1a2332; outline: none; transition: border 0.15s; }
+        .uom-date-input:focus { border-color: #1a56db; box-shadow: 0 0 0 2px rgba(26,86,219,0.1); }
+        .uom-date-sep { color: #94a3b8; font-size: 12px; font-weight: 600; }
+        .uom-date-clear { background: none; border: none; cursor: pointer; color: #94a3b8; display: flex; align-items: center; padding: 2px; border-radius: 5px; transition: background 0.12s, color 0.12s; }
+        .uom-date-clear:hover { background: #fee2e2; color: #dc2626; }
         .uom-rec-count { font-size: 12.5px; color: #64748b; white-space: nowrap; }
         .uom-page-size { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #64748b; }
         .uom-page-size select { border: 1px solid #dde3ec; border-radius: 7px; padding: 6px 10px; font-size: 12.5px; font-family: inherit; background: #fff; cursor: pointer; outline: none; transition: border 0.15s; }
@@ -1621,7 +1665,7 @@ export default function UnifiedOrderManagement({ user }: Props) {
         @keyframes bellPulse { 0%{box-shadow:0 0 0 0 rgba(99,102,241,0.5)} 70%{box-shadow:0 0 0 8px rgba(99,102,241,0)} 100%{box-shadow:0 0 0 0 rgba(99,102,241,0)} }
         .bell-pulse { animation:bellPulse 1.5s ease-out infinite; }
         @media (max-width:900px) { .uom-panels{grid-template-columns:1fr;} .uom-g4{grid-template-columns:1fr 1fr;} .ob-r3{grid-template-columns:1fr 1fr;} .ob-bot-grid{grid-template-columns:1fr;} }
-        @media (max-width:600px) { .uom-g4,.uom-r2{grid-template-columns:1fr;} .ob-r3,.ob-r13{grid-template-columns:1fr;} .uom-page-header,.uom-toolbar{padding:12px 16px;} .uom-card{margin:0 16px 16px;} }
+        @media (max-width:600px) { .uom-g4,.uom-r2{grid-template-columns:1fr;} .ob-r3,.ob-r13{grid-template-columns:1fr;} .uom-page-header,.uom-toolbar{padding:12px 16px;} .uom-card{margin:0 16px 16px;} .uom-date-filter{width:100%;justify-content:space-between;} }
       `}</style>
 
       <div className="uom-root">
@@ -1737,6 +1781,35 @@ export default function UnifiedOrderManagement({ user }: Props) {
             <FiSearch className="uom-search-icon" size={13}/>
             <input className="uom-search" placeholder="Search by order code, customer code, customer, PO no…" value={search} onChange={e => setSearch(e.target.value)}/>
           </div>
+
+          {/* v12: Order Date range filter */}
+          <div className={`uom-date-filter${dateFilterActive?' active':''}`}>
+            <span className="uom-date-filter-icon"><FiCalendar size={13}/></span>
+            <span className="uom-date-filter-label">Order Date</span>
+            <input
+              type="date"
+              className="uom-date-input"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={e => setDateFrom(e.target.value)}
+              title="From date"
+            />
+            <span className="uom-date-sep">–</span>
+            <input
+              type="date"
+              className="uom-date-input"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={e => setDateTo(e.target.value)}
+              title="To date"
+            />
+            {dateFilterActive && (
+              <button type="button" className="uom-date-clear" onClick={clearDateFilter} title="Clear date filter">
+                <FiX size={14}/>
+              </button>
+            )}
+          </div>
+
           <span className="uom-rec-count">{filtered.length} record{filtered.length!==1?'s':''}</span>
           <div className="uom-page-size">
             <span>Show</span>
@@ -1784,7 +1857,7 @@ export default function UnifiedOrderManagement({ user }: Props) {
                     </td>
                   </tr>
                 ) : paginated.length===0 ? (
-                  <tr><td colSpan={14} className="uom-empty">{search ? 'No orders match your search.' : 'No orders found. Click "New Order" to create one.'}</td></tr>
+                  <tr><td colSpan={14} className="uom-empty">{search||dateFilterActive ? 'No orders match your filters.' : 'No orders found. Click "New Order" to create one.'}</td></tr>
                 ) : paginated.map((r, i) => {
                   const src = getOrderSource(r);
                   const custCode = (() => {
