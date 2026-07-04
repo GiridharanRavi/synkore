@@ -29,6 +29,10 @@
 //        on-screen table itself.
 //       – colSpan on the loading/error/empty table rows bumped from 15 → 16
 //        to match the new column count.
+//   • CHANGES v3 (this pass):
+//       – Added an Order Date "From → To" range filter to the toolbar so
+//        users can narrow the main list down to orders placed within a
+//        specific window, alongside the existing Status / Firm filters.
 
 import React, {
   useEffect, useState, useMemo, useCallback, useRef,
@@ -335,6 +339,9 @@ export default function OrderStatusMaster({ user }: Props) {
   const [search,       setSearch]       = useState('');
   const [filterStatus, setFilterStatus] = useState<StatusType | ''>('');
   const [filterFirm,   setFilterFirm]   = useState('');
+  // ── NEW: Order Date range filter (start date → end date) ─────────────────
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo,   setFilterDateTo]   = useState('');
   const [pageSize,     setPageSize]     = useState(10);
   const [currentPage,  setCurrentPage]  = useState(1);
 
@@ -414,7 +421,7 @@ export default function OrderStatusMaster({ user }: Props) {
 
   useEffect(() => { loadRecords(); }, [loadRecords]);
   useEffect(() => { loadOrderRefs(); }, [loadOrderRefs]);
-  useEffect(() => { setCurrentPage(1); }, [search, filterStatus, filterFirm]);
+  useEffect(() => { setCurrentPage(1); }, [search, filterStatus, filterFirm, filterDateFrom, filterDateTo]);
 
   // ─── Open modal ──────────────────────────────────────────────────────────
   const openModal = async (r?: OrderStatusRecord) => {
@@ -659,12 +666,20 @@ export default function OrderStatusMaster({ user }: Props) {
   }, [records]);
 
   // ─── Pagination ──────────────────────────────────────────────────────────
-  const filtered   = records.filter(r =>
-    [r.order_code, r.customer_name, r.firm_name, r.po_no, r.status, r.transport].some(v =>
+  const filtered   = records.filter(r => {
+    const orderDateISO = r.order_date ? toISODate(r.order_date) : '';
+    // ── NEW: Order Date range filter — a row only matches when it has an
+    //    order date AND that date falls within the selected [from, to]
+    //    window (an unset bound on either side is treated as "no limit"). ──
+    const inDateRange =
+      (!filterDateFrom || (orderDateISO !== '' && orderDateISO >= filterDateFrom)) &&
+      (!filterDateTo   || (orderDateISO !== '' && orderDateISO <= filterDateTo));
+    return [r.order_code, r.customer_name, r.firm_name, r.po_no, r.status, r.transport].some(v =>
       (v || '').toLowerCase().includes(search.toLowerCase())
     ) && (!filterStatus || r.status === filterStatus)
       && (!filterFirm || r.firm_name === filterFirm)
-  );
+      && inDateRange;
+  });
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const paginated  = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const goTo       = (p: number) => setCurrentPage(Math.min(Math.max(1, p), totalPages));
@@ -897,6 +912,14 @@ export default function OrderStatusMaster({ user }: Props) {
         .osm-page-size{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px;color:#64748b}
         .osm-page-size select{border:1px solid #dde3ec;border-radius:7px;padding:6px 10px;font-size:12.5px;font-family:inherit;background:#fff;cursor:pointer;outline:none}
         .osm-page-size select:focus{border-color:#1a56db}
+        /* NEW: Order Date range filter group */
+        .osm-daterange{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #dde3ec;border-radius:9px;padding:4px 6px}
+        .osm-daterange-label{font-size:11px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding-left:4px;white-space:nowrap}
+        .osm-daterange input[type="date"]{border:none;border-radius:6px;padding:5px 6px;font-size:12.5px;font-family:inherit;background:#f8fafc;color:#1a2332;outline:none;cursor:pointer}
+        .osm-daterange input[type="date"]:focus{background:#eff6ff}
+        .osm-daterange-sep{font-size:11.5px;color:#94a3b8}
+        .osm-daterange-clear{background:none;border:none;color:#1a56db;font-size:11.5px;font-weight:700;cursor:pointer;padding:3px 6px;font-family:inherit;white-space:nowrap}
+        .osm-daterange-clear:hover{text-decoration:underline}
         /* CARD / TABLE */
         .osm-card{margin:0 28px 28px;background:#fff;border-radius:14px;border:1px solid #e2e8f0;box-shadow:0 2px 12px rgba(0,0,0,.07);overflow:hidden}
         .osm-table-wrap{overflow-x:auto;scrollbar-width:thin;scrollbar-color:#c7d3e8 transparent}
@@ -1132,6 +1155,34 @@ export default function OrderStatusMaster({ user }: Props) {
               <option key={f} value={f}>{f}</option>
             )}
           </select>
+          {/* ── NEW: Order Date range filter (start date → end date) ── */}
+          <div className="osm-daterange">
+            <span className="osm-daterange-label"><FiCalendar size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />Order Date</span>
+            <input
+              type="date"
+              value={filterDateFrom}
+              max={filterDateTo || undefined}
+              onChange={e => setFilterDateFrom(e.target.value)}
+              title="From order date"
+            />
+            <span className="osm-daterange-sep">to</span>
+            <input
+              type="date"
+              value={filterDateTo}
+              min={filterDateFrom || undefined}
+              onChange={e => setFilterDateTo(e.target.value)}
+              title="To order date"
+            />
+            {(filterDateFrom || filterDateTo) && (
+              <button
+                type="button"
+                className="osm-daterange-clear"
+                onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
           <span className="osm-rec-count">{filtered.length} record{filtered.length !== 1 ? 's' : ''}</span>
           <div className="osm-page-size">
             <span>Show</span>
@@ -1181,7 +1232,7 @@ export default function OrderStatusMaster({ user }: Props) {
                     </td>
                   </tr>
                 ) : paginated.length === 0 ? (
-                  <tr><td colSpan={16} className="osm-empty">{search || filterStatus || filterFirm ? 'No records match your filter.' : 'No order statuses yet. Click "New Order Status" to create one.'}</td></tr>
+                  <tr><td colSpan={16} className="osm-empty">{search || filterStatus || filterFirm || filterDateFrom || filterDateTo ? 'No records match your filter.' : 'No order statuses yet. Click "New Order Status" to create one.'}</td></tr>
                 ) : paginated.map((r, i) => {
                   const total     = Number(r.total_meter || 0);
                   const delivered = Number(r.delivered_meter || 0);
