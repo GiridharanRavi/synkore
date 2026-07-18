@@ -1,20 +1,23 @@
-// orderStatusRoute.js — UPDATED (quality / delivery-schedule fields now PERSISTED)
+// orderStatusRoute.js — UPDATED (ledger fields now PERSISTED)
 //
-// ROOT CAUSE OF "Construction not stored" BUG:
-//   The GET routes joined order_bookings but never SELECTed co.quality, so
-//   after save/reload the Construction field always came back undefined.
-//   Fixes below:
-//     1. order_status_master now has real columns: quality, order_date,
-//        expect_delivery, delivery_at, delivery_address, delivery_state,
-//        delivery_country, delivery_pincode, delivery_gst_no.
-//        ensureOrderStatusSchema() auto-adds them on boot if missing.
-//     2. POST / PUT now snapshot these values (sent from the frontend form,
-//        which already has them from the selected order) into osm.* at
-//        save time — so the record is self-contained and immune to the
-//        linked order changing later, or order_booking_id being null.
-//     3. GET routes now SELECT COALESCE(osm.column, co.column) AS column
-//        — prefers the stored snapshot, falls back to the live JOIN for
-//        any legacy rows saved before this migration.
+// CHANGES (this pass):
+//   1. order_status_master gains new columns for the order-level ledger
+//      fields introduced in the frontend: irf, rate, payment_mode,
+//      due_days, deliver_to, purchase_party, purchase_price, terms.
+//      These are entered directly on the Order Status record (not sourced
+//      from order_bookings), so they need no COALESCE/fallback — they're
+//      plain columns returned as-is via `osm.*`.
+//   2. order_status_deliveries gains new columns for the per-despatch
+//      ledger fields: invoice_no, invoice_date, transport, lr_number,
+//      purchase_invoice_no, purchase_invoice_date.
+//   3. ensureOrderStatusSchema() and the new ensureDeliverySchema() both
+//      auto-add missing columns on boot, same pattern as the existing
+//      quality/delivery-address migration.
+//   4. POST / PUT now read + persist all of the above, both for the
+//      master record and for each delivery line.
+//   5. GET routes unchanged in shape except osm.* now naturally includes
+//      the new master-level columns; delivery rows now include the new
+//      per-line columns since they're plain `SELECT *`.
 
 const express = require('express');
 const router  = express.Router();
@@ -31,6 +34,27 @@ async function hasColumn(table, column) {
   return rows[0].cnt > 0;
 }
 
+async function ensureColumns(table, columns) {
+  for (const [col, def] of columns) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await hasColumn(table, col);
+      if (exists) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await db.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+      console.log(`[order-status] migrated: added column '${col}' to ${table}`);
+    } catch (err) {
+      // ER_DUP_FIELDNAME (1060) = another process/reload already added this
+      // column between our hasColumn() check and the ALTER — safe to ignore.
+      if (err && (err.code === 'ER_DUP_FIELDNAME' || err.errno === 1060)) {
+        console.warn(`[order-status] column '${col}' already exists on ${table}, skipping`);
+        continue;
+      }
+      console.error(`[order-status] failed to add column '${col}' on ${table}`, err);
+    }
+  }
+}
+
 const OSM_SNAPSHOT_COLUMNS = [
   ['quality',          'TEXT NULL'],
   ['order_date',       'DATE NULL'],
@@ -41,27 +65,30 @@ const OSM_SNAPSHOT_COLUMNS = [
   ['delivery_country', 'VARCHAR(100) NULL'],
   ['delivery_pincode', 'VARCHAR(20) NULL'],
   ['delivery_gst_no',  'VARCHAR(30) NULL'],
+  // ── NEW: order-level ledger fields ──────────────────────────────────────
+  ['irf',              'VARCHAR(40) NULL'],
+  ['rate',              'DECIMAL(12,2) NULL'],
+  ['payment_mode',      'VARCHAR(20) NULL'],
+  ['due_days',          'INT NULL'],
+  ['deliver_to',        'VARCHAR(150) NULL'],
+  ['purchase_party',    'VARCHAR(150) NULL'],
+  ['purchase_price',    'DECIMAL(12,2) NULL'],
+  ['terms',             'VARCHAR(255) NULL'],
+];
+
+// ── NEW: per-despatch ledger fields on order_status_deliveries ────────────
+const OSD_LEDGER_COLUMNS = [
+  ['invoice_no',             'VARCHAR(60) NULL'],
+  ['invoice_date',           'DATE NULL'],
+  ['transport',              'VARCHAR(150) NULL'],
+  ['lr_number',              'VARCHAR(60) NULL'],
+  ['purchase_invoice_no',    'VARCHAR(60) NULL'],
+  ['purchase_invoice_date',  'DATE NULL'],
 ];
 
 async function ensureOrderStatusSchema() {
-  for (const [col, def] of OSM_SNAPSHOT_COLUMNS) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const exists = await hasColumn('order_status_master', col);
-      if (exists) continue;
-      // eslint-disable-next-line no-await-in-loop
-      await db.execute(`ALTER TABLE order_status_master ADD COLUMN ${col} ${def}`);
-      console.log(`[order-status] migrated: added column '${col}' to order_status_master`);
-    } catch (err) {
-      // ER_DUP_FIELDNAME (1060) = another process/reload already added this
-      // column between our hasColumn() check and the ALTER — safe to ignore.
-      if (err && (err.code === 'ER_DUP_FIELDNAME' || err.errno === 1060)) {
-        console.warn(`[order-status] column '${col}' already exists, skipping`);
-        continue;
-      }
-      console.error(`[order-status] failed to add column '${col}'`, err);
-    }
-  }
+  await ensureColumns('order_status_master',    OSM_SNAPSHOT_COLUMNS);
+  await ensureColumns('order_status_deliveries', OSD_LEDGER_COLUMNS);
 }
 ensureOrderStatusSchema();
 
@@ -77,8 +104,10 @@ function calcStatus(totalMeter, deliveredMeter, isCancelled) {
 }
 
 // Normalizes '' / undefined -> null so we never write empty strings into
-// DATE columns (MySQL rejects '' as an invalid date).
-const nz = (v) => (v === undefined || v === null || v === '' ? null : v);
+// DATE/NUMERIC columns (MySQL rejects '' as an invalid date/number).
+const nz  = (v) => (v === undefined || v === null || v === '' ? null : v);
+const nzn = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+const nzi = (v) => (v === undefined || v === null || v === '' ? null : parseInt(v, 10));
 
 // Merges the fallback_* columns (from the order_bookings JOIN, used only
 // for legacy rows saved before the snapshot columns existed) into the
@@ -179,8 +208,10 @@ router.get('/', async (req, res) => {
     const [count] = await db.execute(countQuery, params);
 
     // Merge legacy-row fallbacks (from the order_bookings JOIN) into the
-    // canonical snapshot fields — the frontend only ever needs `quality`,
-    // `expect_delivery`, etc., not the fallback_* helper columns.
+    // canonical snapshot fields. The new ledger fields (irf, rate, mode,
+    // due_days, deliver_to, purchase_party, purchase_price, terms) are
+    // plain osm.* columns with no order_bookings equivalent, so they need
+    // no merging — they pass through as-is.
     const merged = rows.map(mergeFallbacks);
 
     res.json({
@@ -292,8 +323,8 @@ router.post('/', async (req, res) => {
       remarks,
       is_cancelled = 0,
       deliveries   = [],
-      // ── NEW: snapshot fields, sent from the frontend form (already
-      //         auto-filled from the selected order) ──────────────────────
+      // ── snapshot fields, sent from the frontend form (already
+      //    auto-filled from the selected order) ────────────────────────────
       quality,
       order_date,
       expect_delivery,
@@ -303,6 +334,15 @@ router.post('/', async (req, res) => {
       delivery_country,
       delivery_pincode,
       delivery_gst_no,
+      // ── NEW: order-level ledger fields ──────────────────────────────────
+      irf,
+      rate,
+      payment_mode,
+      due_days,
+      deliver_to,
+      purchase_party,
+      purchase_price,
+      terms,
     } = req.body;
 
     if (!order_code)
@@ -323,8 +363,12 @@ router.post('/', async (req, res) => {
             quality, order_date, expect_delivery,
             delivery_at, delivery_address, delivery_state, delivery_country,
             delivery_pincode, delivery_gst_no,
+            irf, rate, payment_mode, due_days, deliver_to,
+            purchase_party, purchase_price, terms,
             created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 ?, ?, ?, ?, ?, ?, ?, ?,
+                 NOW(), NOW())`,
         [
           order_booking_id || null,
           order_code,
@@ -345,6 +389,14 @@ router.post('/', async (req, res) => {
           nz(delivery_country),
           nz(delivery_pincode),
           nz(delivery_gst_no),
+          nz(irf),
+          nzn(rate),
+          nz(payment_mode),
+          nzi(due_days),
+          nz(deliver_to),
+          nz(purchase_party),
+          nzn(purchase_price),
+          nz(terms),
         ]
       );
 
@@ -354,9 +406,23 @@ router.post('/', async (req, res) => {
         if (!d.delivery_date) continue;
         await conn.execute(
           `INSERT INTO order_status_deliveries
-             (order_status_id, delivery_date, delivered_meter, notes, created_at)
-           VALUES (?, ?, ?, ?, NOW())`,
-          [statusId, d.delivery_date, Number(d.delivered_meter) || 0, d.notes || null]
+             (order_status_id, delivery_date, delivered_meter, notes,
+              invoice_no, invoice_date, transport, lr_number,
+              purchase_invoice_no, purchase_invoice_date,
+              created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            statusId,
+            d.delivery_date,
+            Number(d.delivered_meter) || 0,
+            d.notes || null,
+            nz(d.invoice_no),
+            nz(d.invoice_date),
+            nz(d.transport),
+            nz(d.lr_number),
+            nz(d.purchase_invoice_no),
+            nz(d.purchase_invoice_date),
+          ]
         );
       }
 
@@ -384,7 +450,7 @@ router.put('/:id', async (req, res) => {
       remarks,
       is_cancelled = 0,
       deliveries   = [],
-      // ── NEW: snapshot fields ────────────────────────────────────────────
+      // ── snapshot fields ──────────────────────────────────────────────────
       quality,
       order_date,
       expect_delivery,
@@ -394,6 +460,15 @@ router.put('/:id', async (req, res) => {
       delivery_country,
       delivery_pincode,
       delivery_gst_no,
+      // ── NEW: order-level ledger fields ──────────────────────────────────
+      irf,
+      rate,
+      payment_mode,
+      due_days,
+      deliver_to,
+      purchase_party,
+      purchase_price,
+      terms,
     } = req.body;
 
     if (!total_meter || Number(total_meter) <= 0)
@@ -423,6 +498,14 @@ router.put('/:id', async (req, res) => {
            delivery_country  = ?,
            delivery_pincode  = ?,
            delivery_gst_no   = ?,
+           irf               = ?,
+           rate              = ?,
+           payment_mode      = ?,
+           due_days          = ?,
+           deliver_to        = ?,
+           purchase_party    = ?,
+           purchase_price    = ?,
+           terms             = ?,
            updated_at        = NOW()
          WHERE id = ?`,
         [
@@ -442,6 +525,14 @@ router.put('/:id', async (req, res) => {
           nz(delivery_country),
           nz(delivery_pincode),
           nz(delivery_gst_no),
+          nz(irf),
+          nzn(rate),
+          nz(payment_mode),
+          nzi(due_days),
+          nz(deliver_to),
+          nz(purchase_party),
+          nzn(purchase_price),
+          nz(terms),
           id,
         ]
       );
@@ -453,9 +544,23 @@ router.put('/:id', async (req, res) => {
         if (!d.delivery_date) continue;
         await conn.execute(
           `INSERT INTO order_status_deliveries
-             (order_status_id, delivery_date, delivered_meter, notes, created_at)
-           VALUES (?, ?, ?, ?, NOW())`,
-          [id, d.delivery_date, Number(d.delivered_meter) || 0, d.notes || null]
+             (order_status_id, delivery_date, delivered_meter, notes,
+              invoice_no, invoice_date, transport, lr_number,
+              purchase_invoice_no, purchase_invoice_date,
+              created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            id,
+            d.delivery_date,
+            Number(d.delivered_meter) || 0,
+            d.notes || null,
+            nz(d.invoice_no),
+            nz(d.invoice_date),
+            nz(d.transport),
+            nz(d.lr_number),
+            nz(d.purchase_invoice_no),
+            nz(d.purchase_invoice_date),
+          ]
         );
       }
 

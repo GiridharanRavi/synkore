@@ -59,6 +59,13 @@ app.use('/api/yarn-purchase-orders', yarnPurchaseOrderRoutes);
 const yarnPurchaseInwardRoute  = require('./routes/yarnPurchaseInward');
 app.use('/api/yarn-purchase-inward', yarnPurchaseInwardRoute);
 
+// Yarn Stock — read-only, derived from Yarn Purchase Inward (see
+// yarn_stock_schema.sql for the underlying v_yarn_stock_summary /
+// v_yarn_stock_items views). Mounted right after Yarn Purchase Inward
+// since it reads from the same tables.
+const yarnStockRoutes = require('./routes/yarnStockRoutes');
+app.use('/api/yarn-stock', yarnStockRoutes);
+
 const employeeRoutes = require('./routes/employeeRoute');
 app.use('/api/employees', employeeRoutes);
 
@@ -68,6 +75,34 @@ app.use('/api/order-status', orderStatusRoutes);
 
 const clientProfileRoutes = require('./routes/notifications_routes');
 app.use('/api', clientProfileRoutes);
+
+const accountDetailsRoutes     = require('./routes/accountDetailsRoutes');
+app.use('/api/account-details',  accountDetailsRoutes);
+
+// app.use('/api/fabric-stock', require('./routes/fabricStockRoute'));
+app.use('/api/fabric-stock', require('./routes/fabric-stock'));
+
+const fabricPackingListRoutes = require('./routes/fabricPackingListRoutes');
+app.use('/api/fabric-packing-list', fabricPackingListRoutes);
+
+const fabricInvoiceRoutes = require("./routes/InvoiceRoutes");
+app.use("/api/fabric-invoices", fabricInvoiceRoutes);
+
+const companyDetailsRoutes = require('./routes/companyDetailsRoutes');
+app.use('/api/company-details', companyDetailsRoutes);
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+app.use('/api/yarn-packing-list', require('./routes/yarnPackingListRoutes'));
+
+
+
+const purchaseInvoiceRoutes = require('./routes/PurchaseInvoiceRoutes');
+app.use('/api/purchase-invoices', purchaseInvoiceRoutes);
+
+const trackerRoutes = require('./routes/EmployeetrackerRoutes'); // check this path matches your actual file location/casing exactly
+
+app.use('/api/employee-tracker', trackerRoutes);
+
 
 const {
   yarnRouter,

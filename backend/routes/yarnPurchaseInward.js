@@ -38,6 +38,18 @@
  * blank), so HSN code and every other field always autofill from the exact
  * PO line picked.
  *
+ * FIX (4): yarn_id on each inward line is now validated against yarn_master
+ * before insert/update. yarn_inward_items.yarn_id has an FK constraint
+ * (fk_yii_yarn_new) that previously caused the ENTIRE save to fail with a
+ * generic 500 whenever a PO line referenced a yarn_id that no longer exists
+ * in yarn_master (e.g. a stale/deleted yarn record). Since count_desc,
+ * hsn_code, lot_no, etc. are all denormalized snapshot fields already
+ * stored directly on yarn_inward_items, yarn_id is not required for the
+ * line to be meaningful — so an invalid yarn_id is now silently coerced to
+ * NULL (mirroring the FK's own ON DELETE SET NULL behavior) instead of
+ * blocking the whole transaction. A warning is logged so bad references can
+ * still be tracked down.
+ *
  * NEW: Transport Expenses (freight / loading / unloading / other charges +
  * a computed total) captured as plain fields in the Transport Details
  * section. Requires these new columns on yarn_purchase_inwards — run once:
@@ -72,6 +84,25 @@ const num = (v) => {
 const WEIGHBRIDGE_DISABLED_TYPES = ['Factory Location'];
 function weighbridgeApplicable(inwardType) {
   return !WEIGHBRIDGE_DISABLED_TYPES.includes(inwardType);
+}
+
+// ─── FIX (4): yarn_id FK guard ────────────────────────────────────────────────
+// Loads the full set of valid yarn_master ids once per request and returns a
+// helper that coerces any yarn_id not in that set to NULL. This prevents a
+// single stale/deleted yarn reference on one PO line from failing the FK
+// constraint and rolling back the entire inward save.
+async function loadValidYarnIds(conn) {
+  const [rows] = await conn.query(`SELECT id FROM yarn_master`);
+  return new Set(rows.map(r => r.id));
+}
+function safeYarnId(validYarnIds, rawYarnId) {
+  const id = num(rawYarnId);
+  if (id === null) return null;
+  if (!validYarnIds.has(id)) {
+    console.warn(`[yarn-purchase-inward] yarn_id ${id} not found in yarn_master — storing NULL instead.`);
+    return null;
+  }
+  return id;
 }
 
 // ─── Auto-generate Inward Number ──────────────────────────────────────────────
@@ -298,6 +329,10 @@ router.post('/', async (req, res) => {
     const items      = Array.isArray(body.items) ? body.items : [];
     const totals     = calcTotals(items);
 
+    // FIX (4): pre-load valid yarn_master ids so bad yarn_id references on
+    // individual lines can be nulled out instead of blowing up the whole save.
+    const validYarnIds = await loadValidYarnIds(conn);
+
     // ── Header ────────────────────────────────────────────────────────────────
     const [result] = await conn.query(
       `INSERT INTO yarn_purchase_inwards
@@ -379,7 +414,7 @@ router.post('/', async (req, res) => {
         [
           inwardId, i + 1,
           str(it.invoice_no), str(it.invoice_date) || null,
-          num(it.yarn_id), str(it.count_desc), str(it.hsn_code), str(it.lot_no), num(it.po_kgs),
+          safeYarnId(validYarnIds, it.yarn_id), str(it.count_desc), str(it.hsn_code), str(it.lot_no), num(it.po_kgs),
           num(it.received_kgs),
           str(it.packing_type), num(it.weight_per_package), num(it.no_of_cones),
           num(it.cone_weight), str(it.unit) ?? 'KGS',
@@ -435,6 +470,9 @@ router.put('/:id', async (req, res) => {
     const body   = req.body;
     const items  = Array.isArray(body.items) ? body.items : [];
     const totals = calcTotals(items);
+
+    // FIX (4): same defensive yarn_id validation as POST.
+    const validYarnIds = await loadValidYarnIds(conn);
 
     // ── Header update ─────────────────────────────────────────────────────────
     await conn.query(
@@ -504,7 +542,7 @@ router.put('/:id', async (req, res) => {
         [
           id, i + 1,
           str(it.invoice_no), str(it.invoice_date) || null,
-          num(it.yarn_id), str(it.count_desc), str(it.hsn_code), str(it.lot_no), num(it.po_kgs),
+          safeYarnId(validYarnIds, it.yarn_id), str(it.count_desc), str(it.hsn_code), str(it.lot_no), num(it.po_kgs),
           num(it.received_kgs),
           str(it.packing_type), num(it.weight_per_package), num(it.no_of_cones),
           num(it.cone_weight), str(it.unit) ?? 'KGS',

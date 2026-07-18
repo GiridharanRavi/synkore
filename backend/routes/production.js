@@ -63,6 +63,118 @@ async function getObColumns() {
   return _obCols;
 }
 
+// ── AUTO-DISCOVERY: find the real vendor / supplier tables ───────────────────
+// Instead of assuming fixed table names ("vendor_master", "supplier_master"),
+// scan the database once per server start and pick the best-matching table
+// by name and columns. This means it keeps working no matter what your DB
+// actually calls these tables (vendors, tbl_vendor, mst_vendor, etc.)
+
+let _allTableNames = null;
+async function getAllTableNames() {
+  if (_allTableNames) return _allTableNames;
+  const [rows] = await db.query('SHOW TABLES');
+  const key = Object.keys(rows[0] || {})[0];
+  _allTableNames = rows.map(r => r[key]);
+  return _allTableNames;
+}
+
+// Rank candidate table names for a given keyword ("vendor" / "supplier").
+// Prefers: exact "<keyword>_master" > contains "master" > contains keyword.
+function rankTableCandidates(tableNames, keyword) {
+  const kw = keyword.toLowerCase();
+  return tableNames
+    .filter(t => t.toLowerCase().includes(kw))
+    .sort((a, b) => {
+      const score = (t) => {
+        const tl = t.toLowerCase();
+        if (tl === `${kw}_master`) return 0;
+        if (tl.includes('master'))  return 1;
+        if (tl.startsWith(kw))      return 2;
+        return 3;
+      };
+      return score(a) - score(b);
+    });
+}
+
+// Pick the first column name that exists in the given Set, else null
+function pickCol(cols, candidates) {
+  for (const c of candidates) if (cols.has(c)) return c;
+  return null;
+}
+
+// Generic resolver: finds a table matching `keyword`, reads its columns,
+// and returns { table, cols } or { table: null, cols: new Set() } if none found.
+async function resolveMasterTable(keyword) {
+  const tableNames = await getAllTableNames();
+  const candidates  = rankTableCandidates(tableNames, keyword);
+
+  for (const table of candidates) {
+    try {
+      const [rows] = await db.query(`SHOW COLUMNS FROM \`${table}\``);
+      const cols = new Set(rows.map(r => r.Field));
+      // Must have some kind of name-like column to be usable as a dropdown source
+      const hasNameCol = pickCol(cols, [
+        `${keyword}_name`, 'name', 'company_name', 'full_name', 'title',
+      ]);
+      if (hasNameCol) {
+        console.log(`[${keyword} master] resolved to table "${table}". Columns:`, [...cols]);
+        return { table, cols };
+      }
+    } catch { /* try next candidate */ }
+  }
+
+  console.warn(`[${keyword} master] could NOT auto-resolve a table.`);
+  console.warn(`[${keyword} master] tables containing "${keyword}":`, candidates);
+  console.warn(`[${keyword} master] all tables in DB:`, tableNames);
+  return { table: null, cols: new Set() };
+}
+
+let _vendorResolved   = null;
+async function getVendorTable() {
+  if (_vendorResolved) return _vendorResolved;
+  _vendorResolved = await resolveMasterTable('vendor');
+  return _vendorResolved;
+}
+
+let _supplierResolved = null;
+async function getSupplierTable() {
+  if (_supplierResolved) return _supplierResolved;
+  _supplierResolved = await resolveMasterTable('supplier');
+  return _supplierResolved;
+}
+
+// ── DEBUG ROUTE: GET /api/production-plans/_debug/masters ────────────────────
+// Visit this in the browser (while logged in) or curl it to see exactly what
+// the backend auto-detected for vendor/supplier tables.
+// Safe to remove once vendor/supplier dropdowns are confirmed working.
+router.get('/_debug/masters', async (req, res) => {
+  try {
+    const tableNames = await getAllTableNames();
+    const vendor      = await getVendorTable();
+    const supplier     = await getSupplierTable();
+
+    let vendorRowCount = null, supplierRowCount = null;
+    if (vendor.table)   { const [[c]] = await db.query(`SELECT COUNT(*) AS c FROM \`${vendor.table}\``);   vendorRowCount   = c.c; }
+    if (supplier.table) { const [[c]] = await db.query(`SELECT COUNT(*) AS c FROM \`${supplier.table}\``); supplierRowCount = c.c; }
+
+    res.json({
+      vendor: {
+        resolved_table: vendor.table,
+        columns: [...vendor.cols],
+        row_count: vendorRowCount,
+      },
+      supplier: {
+        resolved_table: supplier.table,
+        columns: [...supplier.cols],
+        row_count: supplierRowCount,
+      },
+      all_tables_in_db: tableNames,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NAMED SUB-ROUTES — must appear BEFORE /:id
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +255,105 @@ router.get('/co/search', async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('[GET /co/search]', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/production-plans/vendors/search ─────────────────────────────────
+// Powers the "By Production" vendor dropdown. Reads from the auto-resolved
+// vendor table (see resolveMasterTable / getVendorTable above). Column names
+// are auto-detected so this survives minor schema differences.
+router.get('/vendors/search', async (req, res) => {
+  try {
+    const { q = '' } = req.query;
+    const { table, cols } = await getVendorTable();
+
+    if (!table) {
+      // Table not found — respond with empty list rather than a 500 so the
+      // frontend dropdown just shows "no vendors found" instead of erroring.
+      return res.json([]);
+    }
+
+    const nameCol = pickCol(cols, ['vendor_name', 'name', 'company_name', 'full_name', 'title']);
+    const codeCol = pickCol(cols, ['vendor_code', 'code']);
+    const locCol  = pickCol(cols, ['location', 'city', 'address']);
+    const idCol   = pickCol(cols, ['id']) || 'id';
+
+    if (!nameCol) return res.json([]);
+
+    const selectCols = [
+      `\`${idCol}\` AS id`,
+      `\`${nameCol}\` AS vendor_name`,
+      codeCol ? `\`${codeCol}\` AS vendor_code` : `NULL AS vendor_code`,
+      locCol  ? `\`${locCol}\` AS location`     : `NULL AS location`,
+    ];
+
+    const whereParts = [`\`${nameCol}\` COLLATE utf8mb4_unicode_ci LIKE ?`];
+    const params = [`%${q}%`];
+    if (codeCol) {
+      whereParts.push(`\`${codeCol}\` COLLATE utf8mb4_unicode_ci LIKE ?`);
+      params.push(`%${q}%`);
+    }
+
+    const sql = `
+      SELECT ${selectCols.join(', ')}
+      FROM \`${table}\`
+      WHERE ${whereParts.join(' OR ')}
+      ORDER BY \`${nameCol}\` ASC
+      LIMIT 50`;
+
+    const [rows] = await db.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('[GET /vendors/search]', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/production-plans/suppliers/search ───────────────────────────────
+// Powers the "By Purchase" supplier dropdown. Reads from the auto-resolved
+// supplier table (see resolveMasterTable / getSupplierTable above).
+router.get('/suppliers/search', async (req, res) => {
+  try {
+    const { q = '' } = req.query;
+    const { table, cols } = await getSupplierTable();
+
+    if (!table) {
+      return res.json([]);
+    }
+
+    const nameCol = pickCol(cols, ['supplier_name', 'name', 'company_name', 'full_name', 'title']);
+    const codeCol = pickCol(cols, ['supplier_code', 'code']);
+    const locCol  = pickCol(cols, ['location', 'city', 'address']);
+    const idCol   = pickCol(cols, ['id']) || 'id';
+
+    if (!nameCol) return res.json([]);
+
+    const selectCols = [
+      `\`${idCol}\` AS id`,
+      `\`${nameCol}\` AS supplier_name`,
+      codeCol ? `\`${codeCol}\` AS supplier_code` : `NULL AS supplier_code`,
+      locCol  ? `\`${locCol}\` AS location`       : `NULL AS location`,
+    ];
+
+    const whereParts = [`\`${nameCol}\` COLLATE utf8mb4_unicode_ci LIKE ?`];
+    const params = [`%${q}%`];
+    if (codeCol) {
+      whereParts.push(`\`${codeCol}\` COLLATE utf8mb4_unicode_ci LIKE ?`);
+      params.push(`%${q}%`);
+    }
+
+    const sql = `
+      SELECT ${selectCols.join(', ')}
+      FROM \`${table}\`
+      WHERE ${whereParts.join(' OR ')}
+      ORDER BY \`${nameCol}\` ASC
+      LIMIT 50`;
+
+    const [rows] = await db.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('[GET /suppliers/search]', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -235,12 +446,14 @@ router.get('/pending-purchase', async (req, res) => {
     const cols = await getColumns();
     const hasFpoId         = cols.has('fpo_id');
     const hasCustomerName  = cols.has('customer_name');
+    const hasSupplierName  = cols.has('supplier_name');
 
     const selectCols = [
       'id', 'rec_no', 'rec_date', 'order_type', 'order_no',
       hasCustomerName ? 'customer_name' : 'NULL AS customer_name',
       'order_sort_no', 'constn_for_production', 'purchase_qty',
       'purchase_special_instruction',
+      hasSupplierName ? 'supplier_name' : 'NULL AS supplier_name',
     ];
 
     let where = 'WHERE purchase_qty > 0';
@@ -289,99 +502,65 @@ router.post('/', async (req, res) => {
     const {
       order_type = '', order_no = '',
       order_date = null, order_sort_no = null,
-      customer_name = '', confirmed_by = '',   // ← confirmed_by destructured
+      customer_name = '', confirmed_by = '',
       constn_for_production = null, order_quantity = null,
       allocated_qty = 0, stock_special_instruction = null,
       production_qty = 0, inhouse_prod_qty = 0, vendor_prod_qty = 0,
       prod_special_instruction = null,
+      vendor_id = null, vendor_name = '',          // ← NEW
       purchase_qty = 0, purchase_special_instruction = null,
+      supplier_id = null, supplier_name = '',       // ← NEW
       order_links = '[]',
     } = req.body;
 
     const cols = await getColumns();
     const hasCustomerName = cols.has('customer_name');
     const hasConfirmedBy  = cols.has('confirmed_by');
+    const hasVendorCols   = cols.has('vendor_name');    // implies vendor_id too
+    const hasSupplierCols = cols.has('supplier_name');  // implies supplier_id too
 
-    let insertSQL, insertVals;
+    // Build column/value lists dynamically so this keeps working whether or
+    // not the migration adding vendor_id/vendor_name/supplier_id/supplier_name
+    // (and the older customer_name/confirmed_by) has been applied yet.
+    const columns = ['rec_no', 'rec_date', 'order_type', 'order_no', 'order_date', 'order_sort_no'];
+    const values  = [recNo, recDate, order_type, order_no, toDateOnly(order_date), order_sort_no || null];
 
-    if (hasCustomerName && hasConfirmedBy) {
-      // ── Full schema: customer_name + confirmed_by both present ────────────
-      insertSQL = `INSERT INTO production_plans
-        (rec_no, rec_date, order_type, order_no, order_date, order_sort_no,
-         customer_name, confirmed_by, constn_for_production, order_quantity,
-         allocated_qty, stock_special_instruction,
-         production_qty, inhouse_prod_qty, vendor_prod_qty, prod_special_instruction,
-         purchase_qty, purchase_special_instruction)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
-      insertVals = [
-        recNo, recDate, order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        customer_name || null,
-        confirmed_by  || null,           // ← saved to DB
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-      ];
-    } else if (hasCustomerName) {
-      // ── customer_name present but no confirmed_by column ──────────────────
-      insertSQL = `INSERT INTO production_plans
-        (rec_no, rec_date, order_type, order_no, order_date, order_sort_no,
-         customer_name, constn_for_production, order_quantity,
-         allocated_qty, stock_special_instruction,
-         production_qty, inhouse_prod_qty, vendor_prod_qty, prod_special_instruction,
-         purchase_qty, purchase_special_instruction)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
-      insertVals = [
-        recNo, recDate, order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        customer_name || null,
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-      ];
-    } else {
-      // ── Minimal schema fallback ───────────────────────────────────────────
-      insertSQL = `INSERT INTO production_plans
-        (rec_no, rec_date, order_type, order_no, order_date, order_sort_no,
-         constn_for_production, order_quantity,
-         allocated_qty, stock_special_instruction,
-         production_qty, inhouse_prod_qty, vendor_prod_qty, prod_special_instruction,
-         purchase_qty, purchase_special_instruction)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
-      insertVals = [
-        recNo, recDate, order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-      ];
+    if (hasCustomerName) { columns.push('customer_name'); values.push(customer_name || null); }
+    if (hasConfirmedBy)  { columns.push('confirmed_by');  values.push(confirmed_by  || null); }
+
+    columns.push(
+      'constn_for_production', 'order_quantity',
+      'allocated_qty', 'stock_special_instruction',
+      'production_qty', 'inhouse_prod_qty', 'vendor_prod_qty', 'prod_special_instruction',
+    );
+    values.push(
+      constn_for_production || null,
+      order_quantity ? Number(order_quantity) : null,
+      Number(allocated_qty) || 0,
+      stock_special_instruction || null,
+      Number(production_qty) || 0,
+      Number(inhouse_prod_qty) || 0,
+      Number(vendor_prod_qty) || 0,
+      prod_special_instruction || null,
+    );
+
+    if (hasVendorCols) {
+      columns.push('vendor_id', 'vendor_name');
+      values.push(vendor_id ? Number(vendor_id) : null, vendor_name || null);
     }
 
-    const [result] = await conn.query(insertSQL, insertVals);
+    columns.push('purchase_qty', 'purchase_special_instruction');
+    values.push(Number(purchase_qty) || 0, purchase_special_instruction || null);
+
+    if (hasSupplierCols) {
+      columns.push('supplier_id', 'supplier_name');
+      values.push(supplier_id ? Number(supplier_id) : null, supplier_name || null);
+    }
+
+    const insertSQL = `INSERT INTO production_plans (${columns.join(', ')})
+      VALUES (${columns.map(() => '?').join(',')})`;
+
+    const [result] = await conn.query(insertSQL, values);
     const dbId = result.insertId;
 
     const links = safeParseArray(order_links);
@@ -428,107 +607,63 @@ router.put('/:id', async (req, res) => {
     const {
       order_type = '', order_no = '',
       order_date = null, order_sort_no = null,
-      customer_name = '', confirmed_by = '',   // ← confirmed_by destructured
+      customer_name = '', confirmed_by = '',
       constn_for_production = null, order_quantity = null,
       allocated_qty = 0, stock_special_instruction = null,
       production_qty = 0, inhouse_prod_qty = 0, vendor_prod_qty = 0,
       prod_special_instruction = null,
+      vendor_id = null, vendor_name = '',          // ← NEW
       purchase_qty = 0, purchase_special_instruction = null,
+      supplier_id = null, supplier_name = '',       // ← NEW
       order_links = '[]', deleted_link_ids = '[]',
     } = req.body;
 
     const cols = await getColumns();
     const hasCustomerName = cols.has('customer_name');
     const hasConfirmedBy  = cols.has('confirmed_by');
+    const hasVendorCols   = cols.has('vendor_name');
+    const hasSupplierCols = cols.has('supplier_name');
 
-    let updateSQL, updateVals;
+    const setParts = ['order_type=?', 'order_no=?', 'order_date=?', 'order_sort_no=?'];
+    const values   = [order_type, order_no, toDateOnly(order_date), order_sort_no || null];
 
-    if (hasCustomerName && hasConfirmedBy) {
-      // ── Full schema: customer_name + confirmed_by both present ────────────
-      updateSQL = `UPDATE production_plans SET
-        order_type=?, order_no=?, order_date=?, order_sort_no=?,
-        customer_name=?, confirmed_by=?,
-        constn_for_production=?, order_quantity=?,
-        allocated_qty=?, stock_special_instruction=?,
-        production_qty=?, inhouse_prod_qty=?, vendor_prod_qty=?,
-        prod_special_instruction=?,
-        purchase_qty=?, purchase_special_instruction=?
-       WHERE id=?`;
-      updateVals = [
-        order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        customer_name || null,
-        confirmed_by  || null,           // ← saved to DB
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-        id,
-      ];
-    } else if (hasCustomerName) {
-      // ── customer_name present but no confirmed_by column ──────────────────
-      updateSQL = `UPDATE production_plans SET
-        order_type=?, order_no=?, order_date=?, order_sort_no=?,
-        customer_name=?,
-        constn_for_production=?, order_quantity=?,
-        allocated_qty=?, stock_special_instruction=?,
-        production_qty=?, inhouse_prod_qty=?, vendor_prod_qty=?,
-        prod_special_instruction=?,
-        purchase_qty=?, purchase_special_instruction=?
-       WHERE id=?`;
-      updateVals = [
-        order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        customer_name || null,
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-        id,
-      ];
-    } else {
-      // ── Minimal schema fallback ───────────────────────────────────────────
-      updateSQL = `UPDATE production_plans SET
-        order_type=?, order_no=?, order_date=?, order_sort_no=?,
-        constn_for_production=?, order_quantity=?,
-        allocated_qty=?, stock_special_instruction=?,
-        production_qty=?, inhouse_prod_qty=?, vendor_prod_qty=?,
-        prod_special_instruction=?,
-        purchase_qty=?, purchase_special_instruction=?
-       WHERE id=?`;
-      updateVals = [
-        order_type, order_no,
-        toDateOnly(order_date),
-        order_sort_no || null,
-        constn_for_production || null,
-        order_quantity ? Number(order_quantity) : null,
-        Number(allocated_qty) || 0,
-        stock_special_instruction || null,
-        Number(production_qty) || 0,
-        Number(inhouse_prod_qty) || 0,
-        Number(vendor_prod_qty) || 0,
-        prod_special_instruction || null,
-        Number(purchase_qty) || 0,
-        purchase_special_instruction || null,
-        id,
-      ];
+    if (hasCustomerName) { setParts.push('customer_name=?'); values.push(customer_name || null); }
+    if (hasConfirmedBy)  { setParts.push('confirmed_by=?');  values.push(confirmed_by  || null); }
+
+    setParts.push(
+      'constn_for_production=?', 'order_quantity=?',
+      'allocated_qty=?', 'stock_special_instruction=?',
+      'production_qty=?', 'inhouse_prod_qty=?', 'vendor_prod_qty=?',
+      'prod_special_instruction=?',
+    );
+    values.push(
+      constn_for_production || null,
+      order_quantity ? Number(order_quantity) : null,
+      Number(allocated_qty) || 0,
+      stock_special_instruction || null,
+      Number(production_qty) || 0,
+      Number(inhouse_prod_qty) || 0,
+      Number(vendor_prod_qty) || 0,
+      prod_special_instruction || null,
+    );
+
+    if (hasVendorCols) {
+      setParts.push('vendor_id=?', 'vendor_name=?');
+      values.push(vendor_id ? Number(vendor_id) : null, vendor_name || null);
     }
 
-    await conn.query(updateSQL, updateVals);
+    setParts.push('purchase_qty=?', 'purchase_special_instruction=?');
+    values.push(Number(purchase_qty) || 0, purchase_special_instruction || null);
+
+    if (hasSupplierCols) {
+      setParts.push('supplier_id=?', 'supplier_name=?');
+      values.push(supplier_id ? Number(supplier_id) : null, supplier_name || null);
+    }
+
+    values.push(id);
+    const updateSQL = `UPDATE production_plans SET ${setParts.join(', ')} WHERE id=?`;
+
+    await conn.query(updateSQL, values);
 
     const deletedIds = safeParseArray(deleted_link_ids).filter(Boolean);
     if (deletedIds.length) {
