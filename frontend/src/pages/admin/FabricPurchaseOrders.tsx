@@ -26,15 +26,247 @@
 //          can silently differ from the one you're viewing in Workbench).
 //   This makes the empty "Order Plan No" dropdown self-diagnosing —
 //   no DevTools Network tab needed to tell the two cases apart.
+//
+// ROW ACTIONS ADDITION (July 2026):
+//   The per-row Edit / Print / Delete buttons were replaced with a single
+//   3-dot ("⋮") kebab menu (see RowActionsMenu below) to reduce row width.
+//
+// KEBAB-MENU PORTAL FIX (July 2026):
+//   The row-actions dropdown was silently failing to appear. Root cause:
+//   `.fpo-table tbody tr:hover td { filter:brightness(0.97); }` applies a
+//   CSS `filter` to the <td> on hover, and `filter` creates a new
+//   containing block for any `position:fixed` descendant (same as
+//   `transform`/`perspective`/`will-change`). Since the kebab button (and
+//   its fixed-position panel) live inside that <td>, while the row was
+//   hovered the panel's fixed coordinates were being resolved against the
+//   filtered <td> instead of the viewport — so it rendered off-screen /
+//   behind other content instead of under the button.
+//   Fix: render the panel through a React Portal into document.body, so
+//   it's structurally outside the table and immune to any ancestor
+//   filter/transform/overflow. The hover rule was also switched from
+//   `filter` to a plain `background` change to remove the landmine for
+//   any future fixed-position UI added inside table rows.
+//
+// SUPPLIER ADDRESS AUTOFILL (July 2026):
+//   Selecting a Supplier in the "Supplier" lookup now auto-fills
+//   "Billing From" with that supplier's registered address, built from
+//   the supplier's individual address components (Address Line 1,
+//   District, State, Pincode, Country — the same fields shown in the
+//   Supplier Master's own address form), the same way selecting an
+//   Order Plan No auto-fills the construction items. The field stays
+//   editable afterwards, and clearing the supplier clears the
+//   auto-filled address too. See formatSupplierAddress() / selectSupplier()
+//   below.
+//
+// PAGE-SIZE SELECTOR ADDITION (July 2026):
+//   Added a "Show N entries" dropdown to the toolbar, matching the
+//   em-page-size / et-page-size pattern used on the Employee Master and
+//   Employee Tracker tables. The previously hardcoded LIMIT constant is
+//   now pageSize state; changing it resets to page 1, same as changing
+//   the search box.
+//
+// ROW ACTIONS SIMPLIFIED (prior revision):
+//   "Convert to Purchase Invoice" has been removed from the row's 3-dot
+//   menu — it now only shows Edit / Print / Delete, as requested. Nothing
+//   else changed. The backend route
+//   (POST /api/fabric-purchase-orders/:id/convert-to-invoice) was left
+//   untouched in case this is wired back in from elsewhere later; this
+//   file simply no longer calls it, and all the state/handlers/modal that
+//   only existed to support that action (convertTarget, converting,
+//   convertError, convertedInvoiceNo, convertInvoiceNo, convertInvoiceDate,
+//   openConvert, closeConvert, handleConvertConfirm, the "Convert to
+//   Purchase Invoice?" confirm dialog, the convertFpoToPurchaseInvoice
+//   import, and the FileOutput icon) have been removed for cleanliness.
+//
+// COMPANY-BRANDED PRINT LAYOUT (prior revision):
+//   handlePrintFpo() was rebuilt to match the official "Purchase Order"
+//   print format (logo + company block, Order No/Date/Due Date/Place of
+//   Supply grid, Order To / Shipping From boxes, item table with
+//   Quality/HSN/Qty/Unit/Price/Taxable Price/GST/Amount, amount-in-words,
+//   Sub Total/Total/Advance/Balance box, HSN-wise CGST+SGST tax summary,
+//   terms & signatory block). Company identity comes from a Company
+//   Details Master via getCompanyDetails(), falling back to
+//   FALLBACK_COMPANY if that master isn't wired up yet.
+//
+// PRINT DATA-FRESHNESS FIX + SUPPLIER GSTIN/CONTACT/AGENT BLOCK
+// (prior revision):
+//   Two issues fixed together:
+//
+//   1. BUG: printing straight from a table row used the row object as
+//      returned by the LIST endpoint (getFabricPurchaseOrders), which
+//      only carries summary columns — no `items[]`, so the printed PO
+//      showed "Quantity 0.00 / ₹0.00" everywhere even though the saved
+//      FPO has real line items. handlePrintFpo() is now async: it opens
+//      the print window immediately (synchronously, so popup blockers
+//      don't block it), shows a lightweight "Loading…" placeholder, then
+//      re-fetches the full record via getFabricPurchaseOrderById(id)
+//      before writing the final HTML. If the refetch fails, it falls back
+//      to whatever was passed in rather than leaving a blank window.
+//
+//   2. Order To box now also prints the supplier's Contact No, GSTIN,
+//      State, and Agent's Name — pulled from the Supplier Master (already
+//      loaded in `suppliers` state) by matching on supplier name, the
+//      same lookup pattern used for Billing From. New optional fields
+//      (contact_no, gstin, agent_name) were added to the Supplier
+//      interface with the usual column-name-variant fallbacks; `state`
+//      already existed. Any field that's blank on the supplier record is
+//      simply omitted from the printout.
+//
+// SUPPLIER ADDRESS → DELIVERY TO AUTOFILL RESTORED (prior revision):
+//   The "Billing From" field no longer exists on this form (removed in an
+//   earlier revision), so the supplier-address autofill described above
+//   had nowhere to write to and was silently doing nothing. It now writes
+//   to "Delivery To" instead: selecting a Supplier builds the same
+//   address string (Address Line 1, District, State, Pincode, Country —
+//   normalized via the usual column-name-variant fallbacks) and drops it
+//   into Delivery To. The field stays fully editable afterwards, and
+//   clearing the supplier (or picking one with no address on file) clears
+//   the auto-filled text back out. See formatSupplierAddress() and
+//   selectSupplier() below.
+//
+// COMPANY (PRINT HEADER) PERSISTENCE FIX (prior revision):
+//   Picking a company in "Company (Print Header)" was never actually
+//   surviving a save — the backend's create/update endpoints didn't
+//   accept `company_id` (or `due_date` / `place_of_supply` / `ship_from`
+//   / `advance` / `description`) at all, so every printed PO fell back to
+//   FALLBACK_COMPANY ("Your Company Name") regardless of what was picked
+//   on screen. This is a backend fix (see fabric-purchase-orders.js) —
+//   no frontend change was needed for it beyond what already existed
+//   here, since `company_id` was already included in the payload sent to
+//   createFabricPurchaseOrder()/updateFabricPurchaseOrder() via the `...form`
+//   spread.
+//
+// PRINT LAYOUT SIMPLIFIED (prior revision):
+//   The "Order To" box (supplier name + contact/GSTIN/state/agent) has
+//   been removed from the printed Purchase Order entirely, per request.
+//   That row of the letterhead now shows only "Delivery To" and
+//   "Shipping From" side by side. Nothing else about the print layout
+//   changed. The two autofill chains that already existed are unaffected
+//   and still work exactly as before:
+//     • Company (Print Header) picker → fills the logo/name/address/
+//       GSTIN/phone/email block at the top-left of the printed PO
+//       (see selectCompany() / CompanyDropdown / CompanyHeaderPreview).
+//     • Supplier picker → auto-fills the "Delivery To" field with that
+//       supplier's registered address (see selectSupplier() /
+//       formatSupplierAddress()). Still fully editable afterwards.
+//
+// SUPPLIER → DELIVERY TO RICH AUTOFILL + COMPANY-ID TYPE-SAFETY FIX
+// (prior revision):
+//   1. "Delivery To" now auto-fills a full multi-line block instead of
+//      just a one-line address — Address, District/City, State, Pincode,
+//      Country, then Contact No, Agent Name, Email and GSTIN, each on
+//      their own line, labelled, whenever the Supplier Master has that
+//      field populated. The field is now a textarea so the multi-line
+//      text is readable, and remains fully editable / clears on unlink,
+//      same as before. See formatSupplierDeliveryBlock() / selectSupplier().
+//   2. DIAGNOSTIC: getSuppliers() now logs the first raw supplier record
+//      returned by the API to the console, and the column-name-variant
+//      fallback lists were widened (state_name/stateName/taluk/city_name/
+//      pin/zip_code/etc.) — if your Supplier Master API uses column names
+//      outside this list, that console line shows you the exact field
+//      name to add.
+//   3. BUG: printed PO header still showed FALLBACK_COMPANY even after
+//      selecting a company, in cases where company_id came back from the
+//      API as a string (e.g. "5") while the Company dropdown's `value`
+//      is a number — `x.id === fpo.company_id` silently failed. All
+//      company-id comparisons (dropdown "selected" lookup, form preview,
+//      and the print header lookup) are now Number()-normalized on both
+//      sides so this mismatch can't happen regardless of what type the
+//      API returns. A console diagnostic also logs fpo.company_id and the
+//      loaded companies list at print time so a still-missing company_id
+//      (i.e. the backend/DB fix from fabric-purchase-orders.js not yet
+//      applied) is immediately visible instead of silently falling back.
+//
+// COMPANY LOGO/ADDRESS VISIBILITY + SUPPLIER "CONTACT NAME" FIELD
+// (prior revision):
+//   1. The Company (Print Header) picker previously only showed the
+//      company's name in its collapsed/selected state and in the list of
+//      options — the registered address only appeared in the separate
+//      "Header Address Preview" box underneath. The collapsed trigger and
+//      each option row in the dropdown now also show the logo (already
+//      present) alongside a one-line address underneath the company name,
+//      so the address is visible everywhere the company name appears, not
+//      just in the preview box.
+//   2. Supplier Master now has a distinct "Contact Name" field (the named
+//      person to contact, separate from the "Agent" field). Added
+//      `contact_name` to the Supplier interface with the usual
+//      column-name-variant fallbacks, and it now prints its own labelled
+//      line ("Contact Name: …") in the auto-filled "Delivery To" block,
+//      ahead of Agent/Email/GSTIN. Same "editable afterwards, clears on
+//      unlink" behavior as every other autofilled field on this form.
+//
+// COMPANY ADDRESS FIELD-MAPPING FIX + TIMES NEW ROMAN PRINT + TABLE
+// ALIGNMENT FIX (prior revision):
+//   1. BUG: the Company Details Master (see its own form) stores the
+//      registered address as ONE multi-line `address` field plus a
+//      separate `pincode` and `cin_no` — not `address_line1/2/3`. The
+//      printed PO's company block was reading only address_line1/2/3
+//      (always empty for this master), so the address silently vanished
+//      from the header while GSTIN/Phone/State kept printing fine.
+//      `CompanyDetails` now has `address` / `pincode` / `cin_no` fields
+//      (address_line1/2/3 kept as a fallback for other data sources),
+//      getCompanyDetails() maps them with the usual column-name-variant
+//      fallbacks, formatCompanyAddress() prefers `address` + appends the
+//      pincode, and the print header now also shows the CIN when present.
+//   2. Printed PO now renders in Times New Roman throughout (was Segoe
+//      UI/Arial) for a more formal, letterhead-style look.
+//   3. BUG: the meta-grid's "Due Date" row only had one <td> where the
+//      table has two columns, leaving a blank half-width gap next to it
+//      and throwing off the box's vertical alignment. Due Date now spans
+//      both columns (colspan=2), the outer/meta tables use
+//      table-layout:fixed so declared column widths are always honored,
+//      and meta-grid cells are vertically centered instead of top-aligned
+//      so short values like "Due Date" don't look stranded.
+//
+// COMPANY LOGO NOT PRINTING — RESOLUTION + WIDER DETECTION (prior
+// revision):
+//   BUG: the company logo displayed fine everywhere inside the app
+//   (picker trigger, dropdown options, header preview) but printed as an
+//   empty bordered box ("No Logo") on the actual Purchase Order. The
+//   first fix widened the raw-field lookup (logo_url/logo/company_logo/…)
+//   and added a resolveAssetUrl() helper — but that helper resolved
+//   relative paths against `window.location.origin`, which is only
+//   correct if the API and the frontend share an origin.
+//
+// COMPANY LOGO STILL NOT PRINTING — REAL ROOT CAUSE FIXED (THIS
+// REVISION):
+//   BUG: `window.location.origin` is the ORIGIN THE REACT APP ITSELF IS
+//   SERVED FROM (the Vite dev server, e.g. http://localhost:5173) — not
+//   the backend API server that actually stores and serves the uploaded
+//   logo file (http://localhost:5000). Resolving a relative/bare path
+//   against the wrong origin produces a URL that 404s against the
+//   frontend dev server, so the <img onerror> handler always fell back
+//   to the "No Logo" placeholder — both inside the app and on the
+//   printed PO — even though `logo_path` was populated correctly in the
+//   database (confirmed via Workbench: a bare filename like
+//   "1783923227427-logo.png", no folder, no leading slash).
+//   Fix:
+//     1. New `ASSET_ORIGIN` constant holds the backend's origin
+//        (http://localhost:5000 — derived from the same base URL
+//        api/services uses to call the API, with any trailing "/api"
+//        stripped). Adjust this if your backend origin differs between
+//        dev/staging/prod — ideally pull it from an env var
+//        (VITE_API_URL) rather than hardcoding, see the TODO below.
+//     2. New `COMPANY_LOGO_DIR` constant ("/uploads/company-logos/")
+//        prefixes bare filenames (no leading "/") before resolution,
+//        since the DB is storing just the filename, not a path. Adjust
+//        this to match whatever folder your backend's multer/static
+//        config actually serves company logos from, if different.
+//     3. resolveAssetUrl() now resolves against ASSET_ORIGIN instead of
+//        window.location.origin, so the same absolute URL works
+//        correctly both inside the app and inside the print popup
+//        window (which also has no base URL of its own).
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Plus, Search, X, ChevronDown, ChevronUp,
   Loader2, AlertCircle, CheckCircle2, Info,
   AlertTriangle, Trash2, PlusCircle, Check,
   Printer, Download, FileSpreadsheet, FileText,
+  MoreVertical, Building2,
 } from "lucide-react";
 
 import {
@@ -47,6 +279,14 @@ import {
   getNextFpoNo,
   getPendingPurchasePlans,
   getHsnCodes,
+  // NOTE: getCompanyDetails is expected to live in ../../api/services
+  // alongside the other master-data getters (getSuppliers, getHsnCodes,
+  // etc.) and hit something like GET /api/company-details (or whatever
+  // your Company Master endpoint is). It is expected to return the LIST
+  // of companies in the Company Details Master (id, company_name,
+  // company_code, firm, gstin, address, logo_url, etc.) — the same
+  // dropdown surfaced elsewhere in the app as "Company (Print Header)".
+  getCompanyDetails,
   FabricPurchaseOrderPayload,
   FpoItem,
 } from "../../api/services";
@@ -58,6 +298,24 @@ interface Supplier {
   name: string;
   supplier_code?: string;
   city?: string;
+  state?: string;
+  contact_no?: string;
+  gstin?: string;
+  agent_name?: string;
+  // Named person to contact at this supplier — distinct from agent_name
+  // (agent_name is the assigned sales agent; contact_name is the actual
+  // contact person on the Supplier Master's own contact form). Used to
+  // add a labelled "Contact Name" line to the auto-filled Delivery To
+  // block (see formatSupplierDeliveryBlock()).
+  contact_name?: string;
+  email?: string;
+  // Address components — same fields shown on the Supplier Master's own
+  // address form. Used to build the auto-filled "Delivery To" text when a
+  // supplier is selected (see formatSupplierAddress() / selectSupplier()).
+  address_line1?: string;
+  district?: string;
+  pincode?: string;
+  country?: string;
 }
 
 interface PendingPlan {
@@ -77,6 +335,62 @@ interface HsnEntry {
   code: string;
   description: string;
 }
+
+// Company Details Master — mirrors the fields shown on that master's own
+// form (Company Name, Address, Pin Code, GST No, CIN No, Logo, Phone,
+// Email, State…). Used to brand the printed Purchase Order header exactly
+// like the official letterhead: logo + name + address + phone + email +
+// GSTIN + state, top-left, next to the Order No / Date / Due Date grid.
+// The Company Details Master holds MULTIPLE companies/entities (the
+// business operates across several — see the "Company (Print Header)"
+// picker below), so this file loads the full list and lets the user pick
+// which one prints on each FPO.
+interface CompanyDetails {
+  id: number;
+  name: string;
+  code?: string;
+  firm?: string;
+  logo_url?: string;
+  // Debug only — the exact raw-API key name the logo was found under
+  // (e.g. "logo_url", "image", "attachment"…), so a missing logo is
+  // instantly diagnosable from the Company dropdown's own toast, without
+  // needing to open DevTools. Not sent anywhere, purely informational.
+  _logoSourceKey?: string;
+  // The Company Master's own form (see its "Address" textarea) stores the
+  // registered address as ONE multi-line field, with pincode and CIN as
+  // separate fields alongside it — NOT split into address_line1/2/3. That
+  // legacy line1/2/3 shape is kept below purely as a fallback for other
+  // data sources that might still use it.
+  address?: string;
+  pincode?: string;
+  cin_no?: string;
+  address_line1?: string;
+  address_line2?: string;
+  address_line3?: string;
+  phone?: string;
+  email?: string;
+  gstin?: string;
+  state?: string;
+}
+
+// Fallback used until the Company Details Master endpoint is available or
+// while it's still loading, so Print never renders a blank header. Replace
+// with your own defaults, or better — wire up getCompanyDetails() to your
+// Company Master and this is never shown in production.
+const FALLBACK_COMPANY: CompanyDetails = {
+  id: 0,
+  name: "Your Company Name",
+  address: "",
+  pincode: "",
+  cin_no: "",
+  address_line1: "",
+  address_line2: "",
+  address_line3: "",
+  phone: "",
+  email: "",
+  gstin: "",
+  state: "",
+};
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
@@ -156,7 +470,6 @@ const FPO_EXPORT_COLUMNS = [
   { key: "plan_rec_no",   label: "Plan No" },
   { key: "order_no",      label: "Order No" },
   { key: "purchase_qty",  label: "Purchase Qty" },
-  { key: "billing_from",  label: "Billing From" },
   { key: "delivery_to",   label: "Delivery To" },
   { key: "pay_terms",     label: "Pay Terms" },
   { key: "rate_type",     label: "Rate Type" },
@@ -304,6 +617,98 @@ function ExportMenu({ onCSV, onExcel, onPrint }: { onCSV: () => void; onExcel: (
   );
 }
 
+// ─── Row Actions Menu (3-dot / kebab) ─────────────────────────────────────────
+// Replaces the old inline Edit / Print / Delete buttons in the table's
+// Actions column. The dropdown panel is rendered through a React Portal
+// into document.body — NOT inline inside the <td> — so it is completely
+// unaffected by ancestor CSS such as overflow:hidden/auto, transform, or
+// (critically) the `.fpo-table tbody tr:hover td { filter:... }` hover
+// rule, which otherwise silently re-anchors position:fixed descendants to
+// the filtered <td> instead of the viewport.
+//
+// Only Edit / Print / Delete — "Convert to Purchase Invoice" has been
+// removed per request.
+
+interface RowActionsMenuProps {
+  onEdit: () => void;
+  onPrint: () => void;
+  onDelete: () => void;
+}
+function RowActionsMenu({ onEdit, onPrint, onDelete }: RowActionsMenuProps) {
+  const [open, setOpen]   = useState(false);
+  const triggerRef        = useRef<HTMLButtonElement>(null);
+  const panelRef          = useRef<HTMLDivElement>(null);
+  const [pos, setPos]     = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => {
+      if (triggerRef.current?.contains(e.target as Node) || panelRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => { window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
+  }, [open]);
+
+  const toggle = () => {
+    if (!open && triggerRef.current) {
+      const r          = triggerRef.current.getBoundingClientRect();
+      const menuW       = 230;
+      const menuH       = 140; // 3 items instead of 4+dividers — shorter panel
+      const spaceBelow  = window.innerHeight - r.bottom;
+      const top   = spaceBelow > menuH + 8 ? r.bottom + 4 : Math.max(8, r.top - menuH - 4);
+      const left  = Math.min(r.right - menuW, window.innerWidth - menuW - 8);
+      setPos({ top, left: Math.max(8, left) });
+    }
+    setOpen(o => !o);
+  };
+
+  const Item = ({
+    icon, label, onClick, danger,
+  }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) => (
+    <button
+      type="button"
+      className={`fpo-row-menu-item${danger ? " fpo-row-menu-item--danger" : ""}`}
+      onClick={() => { setOpen(false); onClick(); }}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+
+  // ── PORTAL: mount the panel on document.body instead of inline ──
+  const panel = open ? (
+    <div
+      ref={panelRef}
+      className="fpo-row-menu-panel"
+      style={{ position: "fixed", top: pos.top, left: pos.left, width: 230, zIndex: 9999 }}
+    >
+      <Item icon={<span style={{ fontSize: 14, lineHeight: 1 }}>✏️</span>} label="Edit" onClick={onEdit} />
+      <Item icon={<Printer size={14} color="#0284c7" />} label="Print" onClick={onPrint} />
+      <div className="fpo-row-menu-divider" />
+      <Item icon={<Trash2 size={14} color="#dc2626" />} label="Delete" onClick={onDelete} danger />
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <button ref={triggerRef} type="button" className="fpo-row-menu-btn" onClick={toggle} title="Actions">
+        <MoreVertical size={16} />
+      </button>
+
+      {panel && createPortal(panel, document.body)}
+    </>
+  );
+}
+
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
 const fmt = (n: number) =>
@@ -328,14 +733,160 @@ const fmtDate = (raw?: string | null): string => {
   return s;
 };
 
+// Formats a company's own registered address (from the Company Details
+// Master) into a single display string for both the "Header Address
+// Preview" shown under the picker and the printed PO letterhead.
+//
+// The Company Master's own form stores the address as ONE multi-line
+// `address` field plus a separate `pincode` — NOT split into
+// address_line1/2/3. `address` is preferred when present; the legacy
+// line1/2/3 shape is kept as a fallback for any other data source that
+// might still use it. Newlines in `address` are preserved by the caller
+// (handlePrintFpo) where they matter for print formatting.
+const formatCompanyAddress = (c?: CompanyDetails | null): string => {
+  if (!c) return "";
+  const base = c.address
+    ? c.address.trim()
+    : [c.address_line1, c.address_line2, c.address_line3].filter(Boolean).join(", ");
+  if (!base) return c.pincode ? `PIN: ${c.pincode}` : "";
+  return c.pincode && !base.includes(c.pincode) ? `${base} - ${c.pincode}` : base;
+};
+
+// ── LOGO FIX (THIS REVISION) ─────────────────────────────────────────────────
+// ROOT CAUSE: `window.location.origin` is the origin the REACT APP is
+// served from (the Vite dev server, e.g. http://localhost:5173) — not the
+// BACKEND API server that actually stores/serves the uploaded logo file.
+// Resolving a relative or bare filename against the wrong origin produces
+// a URL that 404s, which is why the logo silently fell back to "No Logo"
+// both inside the app and on the printed PO, even though `logo_path` is
+// populated correctly in the database.
+//
+// TODO: if your backend origin differs between dev / staging / production
+// (it almost certainly will), replace the hardcoded fallback below with
+// an env var, e.g.:
+//   const ASSET_ORIGIN = import.meta.env.VITE_API_URL?.replace(/\/api\/?$/, "")
+//     ?? "http://localhost:5000";
+// The value below matches what you're currently running locally
+// (http://localhost:5000/api, with the trailing /api stripped).
+const ASSET_ORIGIN = "http://localhost:5000";
+
+// The DB stores just the bare filename for company logos (e.g.
+// "1783923227427-logo.png" — confirmed via Workbench: no folder, no
+// leading slash). This is the folder the backend actually serves those
+// files from. CONFIRM this against your backend's multer/static-serve
+// config (e.g. `app.use("/uploads/company-logos", express.static(...))`)
+// — if the real folder name differs, update it here.
+const COMPANY_LOGO_DIR = "/uploads/company-logos/";
+
+// Resolves a possibly-relative asset path (e.g. "/uploads/logos/xyz.png"
+// or a bare filename like "xyz.png") into an absolute URL pointing at the
+// BACKEND server, and unwraps common nested shapes a logo field might
+// come back as (a bare string, or an object like { url } / { path } /
+// { src } some upload APIs return instead of a bare string). Needed both
+// because the printed PO opens in a brand-new blank popup window with no
+// base URL of its own, AND because the frontend app itself is served
+// from a different origin than the backend that stores the file.
+const resolveAssetUrl = (raw: unknown): string => {
+  let url = "";
+  if (typeof raw === "string") {
+    url = raw;
+  } else if (raw && typeof raw === "object") {
+    url = (raw as any).url ?? (raw as any).path ?? (raw as any).src ?? "";
+  }
+  url = (url || "").toString().trim();
+  if (!url) return "";
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+
+  // Bare filename, no folder at all (e.g. "1783923227427-logo.png") —
+  // prefix with the backend's upload folder before it's a usable path.
+  if (!url.startsWith("/")) {
+    url = COMPANY_LOGO_DIR + url;
+  }
+
+  // Resolve against the BACKEND's origin — not window.location.origin,
+  // which is the frontend dev/prod server and has no /uploads route.
+  try {
+    return new URL(url, ASSET_ORIGIN).href;
+  } catch {
+    return url;
+  }
+};
+
+// Formats a supplier's registered address (Address Line 1, District,
+// State, Pincode, Country — the same fields shown on the Supplier
+// Master's own address form) into a single display string. Still used
+// wherever a compact one-line address is needed (e.g. print).
+const formatSupplierAddress = (s?: Supplier | null): string => {
+  if (!s) return "";
+  const cityOrDistrict = s.district || s.city || "";
+  return [s.address_line1, cityOrDistrict, s.state, s.pincode, s.country]
+    .filter(Boolean)
+    .join(", ");
+};
+
+// Builds the full multi-line "Delivery To" block auto-filled when a
+// Supplier is selected: registered address on the first line(s), then a
+// labelled line each for Contact Name, Contact No, Agent Name, Email, and
+// GSTIN, whenever the Supplier Master has that field populated. Blank
+// fields are simply omitted rather than printed as "—", so the block
+// stays clean for suppliers with partial data on file. Still fully
+// editable afterwards.
+const formatSupplierDeliveryBlock = (s?: Supplier | null): string => {
+  if (!s) return "";
+  const lines: string[] = [];
+  const address = formatSupplierAddress(s);
+  if (address) lines.push(address);
+  if (s.pincode && !address.includes(s.pincode)) lines.push(`PIN: ${s.pincode}`);
+  if (s.contact_name) lines.push(`Contact Name: ${s.contact_name}`);
+  if (s.contact_no) lines.push(`Contact No: ${s.contact_no}`);
+  if (s.agent_name) lines.push(`Agent: ${s.agent_name}`);
+  if (s.email) lines.push(`Email: ${s.email}`);
+  if (s.gstin) lines.push(`GSTIN: ${s.gstin}`);
+  return lines.join("\n");
+};
+
+// Converts a rupee amount into words using the Indian numbering system
+// (Crore / Lakh / Thousand / Hundred), e.g. 3207750 → "Thirty Two Lakh
+// Seven Thousand Seven Hundred Fifty Rupees only". Used on the printed
+// Purchase Order under "Order Amount in Words".
+const ONES = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+  "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+const TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+const twoDigitsToWords = (n: number): string => {
+  if (n < 20) return ONES[n];
+  return TENS[Math.floor(n / 10)] + (n % 10 ? " " + ONES[n % 10] : "");
+};
+const threeDigitsToWords = (n: number): string => {
+  if (n >= 100) return ONES[Math.floor(n / 100)] + " Hundred" + (n % 100 ? " " + twoDigitsToWords(n % 100) : "");
+  return twoDigitsToWords(n);
+};
+const numberToWordsIndian = (num: number): string => {
+  let n = Math.floor(Math.max(0, num));
+  if (n === 0) return "Zero";
+  const crore = Math.floor(n / 10000000); n %= 10000000;
+  const lakh  = Math.floor(n / 100000);   n %= 100000;
+  const thou  = Math.floor(n / 1000);     n %= 1000;
+  const rest  = n;
+  let words = "";
+  if (crore) words += threeDigitsToWords(crore) + " Crore ";
+  if (lakh)  words += threeDigitsToWords(lakh)  + " Lakh ";
+  if (thou)  words += threeDigitsToWords(thou)  + " Thousand ";
+  if (rest)  words += threeDigitsToWords(rest)  + " ";
+  return words.trim();
+};
+const amountInWords = (amount: number): string =>
+  `${numberToWordsIndian(amount)} Rupees only`;
+
 // ─── Factories ────────────────────────────────────────────────────────────────
 
 const emptyItem = (): FpoItem => ({
   sort_no: "", construction: "", hsn_code: "", qty: 0, rate: 0, basic_value: 0,
+  unit: "MTR",
 });
 
 const defaultForm = (): FabricPurchaseOrderPayload => ({
-  fpo_no: "", fpo_date: today(), supplier: "", billing_from: "",
+  fpo_no: "", fpo_date: today(), supplier: "",
   delivery_to: "", pay_terms: "", pinning: "", packing_type: "",
   rate_type: "", freight: "", delivery_dt: today(), remarks: "",
   cgst_pct: 0, sgst_pct: 0, igst_pct: 0,
@@ -345,6 +896,17 @@ const defaultForm = (): FabricPurchaseOrderPayload => ({
   plan_rec_no: "",
   order_no: "",
   purchase_qty: 0,
+  // New PO-print-only fields — all optional, all editable, all default to
+  // sensible fallbacks if left blank (see handlePrintFpo).
+  due_date: today(),
+  place_of_supply: "",
+  ship_from: "",
+  advance: 0,
+  description: "",
+  // Which entity from the Company Details Master prints on this FPO's
+  // letterhead (logo, name, address, GSTIN…). Defaults to none selected —
+  // the print falls back to FALLBACK_COMPANY until one is picked.
+  company_id: null,
 });
 
 // ─── Width hook ───────────────────────────────────────────────────────────────
@@ -538,6 +1100,177 @@ function SupplierDropdown({ value, onChange, suppliers }: SupplierDropdownProps)
   );
 }
 
+// ─── Company (Print Header) Dropdown ──────────────────────────────────────────
+// Lets the user pick which entity in the Company Details Master prints on
+// this FPO's letterhead — the business operates across multiple entities
+// (see AgentMaster / OrderStatusMaster "Firm" field), so this mirrors the
+// same "Company (Print Header)" search dropdown used on the Packing List:
+// logo thumbnail, company name, code + GSTIN, and a small Firm badge.
+//
+// Both the collapsed/selected trigger and each option row also show a
+// one-line registered address underneath the company name (in addition to
+// the logo), so the address is visible everywhere the company name
+// appears — not just in the separate "Header Address Preview" box below.
+interface CompanyDropdownProps {
+  value: number | null;
+  onChange: (company: CompanyDetails | null) => void;
+  companies: CompanyDetails[];
+  loading: boolean;
+}
+function CompanyDropdown({ value, onChange, companies, loading }: CompanyDropdownProps) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef           = useRef<HTMLDivElement>(null);
+  const inputRef          = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) { setOpen(false); setQuery(""); }
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  useEffect(() => { if (open && inputRef.current) inputRef.current.focus(); }, [open]);
+
+  const q = query.toLowerCase();
+  const filtered = companies.filter(c =>
+    (c.name ?? "").toLowerCase().includes(q) ||
+    (c.code ?? "").toLowerCase().includes(q) ||
+    (c.firm ?? "").toLowerCase().includes(q)
+  );
+
+  const selected = value != null ? companies.find(c => Number(c.id) === Number(value)) : null;
+  const selectedAddress = selected ? formatCompanyAddress(selected) : "";
+
+  return (
+    <div className="fpo-sup-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`fpo-sup-trigger fpo-co-trigger${open ? " open" : ""}${value ? " has-value" : ""}`}
+        onClick={() => !loading && setOpen(o => !o)}
+        disabled={loading}
+      >
+        <span className="fpo-sup-content">
+          {loading ? (
+            <span className="fpo-sup-placeholder" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> Loading companies…
+            </span>
+          ) : selected ? (
+            <span className="fpo-co-selected">
+              <span className="fpo-co-avatar">
+                {selected.logo_url ? <img src={selected.logo_url} alt="" /> : <Building2 size={13} />}
+              </span>
+              <span className="fpo-co-selected-body">
+                <span className="fpo-co-selected-name">{selected.name}</span>
+                {selectedAddress && <span className="fpo-co-selected-address">{selectedAddress}</span>}
+              </span>
+            </span>
+          ) : (
+            <span className="fpo-sup-placeholder">Search company name, code or firm…</span>
+          )}
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          {value && !loading && (
+            <span className="fpo-sup-clear" onClick={e => { e.stopPropagation(); onChange(null); setQuery(""); }} title="Clear selection">
+              <X size={13} />
+            </span>
+          )}
+          <ChevronDown size={14} style={{ color: "#64748b", transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0deg)" }} />
+        </span>
+      </button>
+
+      {open && (
+        <div className="fpo-sup-panel">
+          <div className="fpo-sup-search-wrap">
+            <Search size={13} style={{ color: "#94a3b8", flexShrink: 0 }} />
+            <input ref={inputRef} className="fpo-sup-search" placeholder="Search company name, code or firm…" value={query} onChange={e => setQuery(e.target.value)} />
+            {query && (
+              <button type="button" onClick={() => setQuery("")}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#94a3b8", padding: 0, display: "flex", alignItems: "center" }}>
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          <div className="fpo-sup-count">
+            {filtered.length === 0
+              ? companies.length === 0
+                ? <span style={{ color: "#f59e0b" }}>No companies in the Company Details Master</span>
+                : <span style={{ color: "#c2410c" }}>No match for "{query}"</span>
+              : <span>{filtered.length} compan{filtered.length !== 1 ? "ies" : "y"}</span>}
+          </div>
+          <div className="fpo-sup-list">
+            {value && (
+              <div className="fpo-sup-option fpo-sup-clear-opt" onClick={() => { onChange(null); setOpen(false); setQuery(""); }}>
+                — Clear selection —
+              </div>
+            )}
+            {filtered.length === 0 ? (
+              <div className="fpo-sup-empty">
+                <Search size={28} color="#cbd5e1" />
+                <span>No companies found</span>
+              </div>
+            ) : filtered.map(c => {
+              const optAddress = formatCompanyAddress(c);
+              return (
+                <div key={c.id} className={`fpo-sup-option fpo-co-option${Number(c.id) === Number(value) ? " selected" : ""}`}
+                  onClick={() => { onChange(c); setOpen(false); setQuery(""); }}>
+                  <span className="fpo-co-avatar">
+                    {c.logo_url ? <img src={c.logo_url} alt="" /> : <Building2 size={13} />}
+                  </span>
+                  <div className="fpo-co-opt-body">
+                    <div className="fpo-co-opt-name">{c.name}</div>
+                    <div className="fpo-co-opt-meta">
+                      {c.code && <span>{c.code}</span>}
+                      {c.gstin && <span>· GST {c.gstin}</span>}
+                    </div>
+                    {optAddress && <div className="fpo-co-opt-address">{optAddress}</div>}
+                  </div>
+                  {c.firm && <span className="fpo-co-firm-badge">{c.firm}</span>}
+                  {Number(c.id) === Number(value) && <Check size={14} style={{ color: "#7c3aed", flexShrink: 0, marginLeft: 4 }} />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Live preview of what prints at the top of the letterhead — logo, name,
+// full address, PIN, GSTIN, phone/email — shown right under the Company
+// picker so there's no surprise at print time.
+function CompanyHeaderPreview({ company }: { company: CompanyDetails | null }) {
+  if (!company) return null;
+  const address = formatCompanyAddress(company);
+  return (
+    <div className="fpo-co-preview">
+      <div className="fpo-co-preview-label">Header Address Preview <span>(what prints at the top of this Purchase Order)</span></div>
+      <div className="fpo-co-preview-body">
+        <span className="fpo-co-preview-avatar">
+          {company.logo_url ? <img src={company.logo_url} alt="" /> : <Building2 size={18} />}
+        </span>
+        <div className="fpo-co-preview-text">
+          <div className="fpo-co-preview-name">{company.name}</div>
+          {address && <div className="fpo-co-preview-line">{address}</div>}
+          {company.gstin && <div className="fpo-co-preview-line">GST No: {company.gstin}</div>}
+          {(company.phone || company.email) && (
+            <div className="fpo-co-preview-line">
+              {company.phone ? `Ph: ${company.phone}` : ""}{company.phone && company.email ? "  |  " : ""}{company.email ? `E-mail: ${company.email}` : ""}
+            </div>
+          )}
+          {!company.logo_url && (
+            <div className="fpo-co-preview-line" style={{ color: "#b45309" }}>
+              ⚠ No logo on file for this company — check the Company Details Master.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Plan Picker Dropdown ─────────────────────────────────────────────────────
 
 interface PlanDropdownProps {
@@ -605,9 +1338,6 @@ function PlanDropdown({ value, planRecNo, onChange, plans, loading }: PlanDropdo
           <ChevronDown size={14} style={{ color: "#64748b", transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0deg)" }} />
         </span>
       </button>
-
-     
-     
 
       {open && (
         <div className="fpo-sup-panel">
@@ -843,7 +1573,8 @@ export default function FabricPurchaseOrders() {
   const [page,    setPage]    = useState(1);
   const [search,  setSearch]  = useState("");
   const [loading, setLoading] = useState(false);
-  const LIMIT = 10;
+  const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+  const [pageSize, setPageSize] = useState(10);
 
   const [suppliers,    setSuppliers]    = useState<Supplier[]>([]);
   const [pendingPlans, setPendingPlans] = useState<PendingPlan[]>([]);
@@ -854,6 +1585,14 @@ export default function FabricPurchaseOrders() {
   const [hsnCodes,        setHsnCodes]        = useState<HsnEntry[]>([]);
   const [hsnCodesLoading, setHsnCodesLoading] = useState(false);
   const [hsnCodesError,   setHsnCodesError]   = useState("");
+
+  // ── Company Details Master — feeds the printed PO header (logo, name,
+  //    address, phone, email, GSTIN, state). The master holds MULTIPLE
+  //    entities; `companies` is the full list for the "Company (Print
+  //    Header)" picker, and each FPO stores which one (company_id) prints
+  //    on its letterhead.
+  const [companies,        setCompanies]        = useState<CompanyDetails[]>([]);
+  const [companiesLoading, setCompaniesLoading] = useState(false);
 
   const [showModal,     setShowModal]     = useState(false);
   const [form,          setForm]          = useState<FabricPurchaseOrderPayload>(defaultForm());
@@ -883,21 +1622,148 @@ export default function FabricPurchaseOrders() {
   const isMobile = width < 576;
 
   // ── Load suppliers ──
+  // DIAGNOSTIC: logs the first raw supplier record exactly as returned by
+  // getSuppliers(), before any column-name normalisation, so if "Delivery
+  // To" ever comes up blank after selecting a supplier you can open
+  // DevTools console and see the real field names the Supplier Master API
+  // is using — then add any missing variant to the fallback lists below.
   useEffect(() => {
     getSuppliers().then(res => {
       const raw: Record<string, unknown>[] = res.data ?? res;
+      if (raw?.[0]) {
+      
+      }
       setSuppliers(
         raw
           .map(r => ({
             id:            (r.id ?? r.supplier_id ?? 0) as number,
             name:          ((r.name ?? r.supplier_name ?? r.supplierName ?? "") as string).trim(),
             supplier_code: ((r.supplier_code ?? r.code ?? "") as string).trim(),
-            city:          ((r.city ?? "") as string).trim(),
+            city:          ((r.city ?? r.city_name ?? r.cityName ?? "") as string).trim(),
+            state: (
+              (r.state ?? r.state_name ?? r.stateName ?? r.state_title ?? "") as string
+            ).trim(),
+            // Printed on the PO's "Order To" box (see sample PO format)
+            // and now also on the "Delivery To" autofill block. Already
+            // present on the Supplier Master — normalize the common
+            // column-name variants here.
+            contact_no: (
+              (r.contact_no ?? r.contact_number ?? r.contactNo ?? r.phone ?? r.phone_no ?? r.phoneNo ?? r.mobile ?? r.mobile_no ?? r.mobileNo ?? "") as string
+            ).trim(),
+            gstin: (
+              (r.gstin ?? r.gst_no ?? r.gstNo ?? r.gst_number ?? "") as string
+            ).trim(),
+            agent_name: (
+              (r.agent_name ?? r.agentName ?? r.agent ?? "") as string
+            ).trim(),
+            // Named contact person on file for this supplier — distinct
+            // from the sales agent (agent_name above). Normalises the
+            // common column-name variants a Supplier Master might use.
+            contact_name: (
+              (r.contact_name ?? r.contactName ?? r.contact_person ?? r.contactPerson ?? r.person_name ?? r.personName ?? "") as string
+            ).trim(),
+            email: (
+              (r.email ?? r.email_id ?? r.emailId ?? r.supplier_email ?? r.contact_email ?? "") as string
+            ).trim(),
+            // Address components — same fields shown on the Supplier
+            // Master's own address form. Used to auto-fill "Delivery To"
+            // when this supplier is selected (see selectSupplier()).
+            address_line1: (
+              (r.address_line1 ?? r.address_line_1 ?? r.addressLine1 ?? r.address ?? r.address1 ?? "") as string
+            ).trim(),
+            district: (
+              (r.district ?? r.district_name ?? r.districtName ?? r.taluk ?? r.taluk_name ?? "") as string
+            ).trim(),
+            pincode: (
+              (r.pincode ?? r.pin_code ?? r.pinCode ?? r.postal_code ?? r.postalCode ?? r.zip ?? r.zip_code ?? r.pin ?? "") as string
+            ).trim(),
+            country: (
+              (r.country ?? r.country_name ?? r.countryName ?? "") as string
+            ).trim(),
           }))
           .filter(s => Boolean(s.name))
       );
     }).catch(() => {});
   }, []);
+
+  // ── Load Company Details Master (list of entities) ──
+  // Same defensive pattern used everywhere else in this file: try the
+  // real endpoint, normalize whatever column names it returns, and fall
+  // back quietly to an empty list if the call fails or the endpoint
+  // doesn't exist yet — printing should never break because a master
+  // screen isn't wired up (handlePrintFpo falls back to FALLBACK_COMPANY).
+  //
+  // LOGO FIX: the logo field lookup checks a wide set of possible
+  // raw-API key names (logo_url / logo / company_logo / logoUrl /
+  // logo_path / logoPath / logo_image / logoImage / image / image_url /
+  // attachment / file) AND unwraps object shapes like { url } / { path }
+  // / { src } via resolveAssetUrl(), which now also resolves against the
+  // BACKEND's origin (ASSET_ORIGIN) instead of window.location.origin,
+  // and prefixes bare filenames with COMPANY_LOGO_DIR — the single point
+  // every consumer (picker / preview / print) benefits from automatically.
+  // The key that was actually matched is recorded in `_logoSourceKey`
+  // purely for on-screen diagnostics (see selectCompany()).
+  const loadCompanies = useCallback(async (): Promise<CompanyDetails[]> => {
+  if (typeof getCompanyDetails !== "function") return [];
+  setCompaniesLoading(true);
+  try {
+    const res: any = await getCompanyDetails();
+    const raw = res?.data ?? res;
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+
+    if (list[0]) {
+     
+    }
+
+    const mapped: CompanyDetails[] = list.map((d: any, i: number) => {
+      const logoCandidates: [string, unknown][] = [
+        ["logo_url", d.logo_url],
+        ["logo", d.logo],
+        ["company_logo", d.company_logo],
+        ["logoUrl", d.logoUrl],
+        ["logo_path", d.logo_path],
+        ["logoPath", d.logoPath],
+        ["logo_image", d.logo_image],
+        ["logoImage", d.logoImage],
+        ["image", d.image],
+        ["image_url", d.image_url],
+        ["attachment", d.attachment],
+        ["file", d.file],
+      ];
+      const found = logoCandidates.find(([, v]) => v);
+      const logo_url = found ? resolveAssetUrl(found[1]) : "";
+
+      return {
+        id:             Number(d.id ?? d.company_id ?? i + 1),
+        name:           (d.company_name ?? d.name ?? "").toString().trim(),
+        code:           (d.company_code ?? d.code ?? "").toString().trim(),
+        firm:           (d.firm ?? d.firm_code ?? "").toString().trim(),
+        logo_url,
+        _logoSourceKey: found ? found[0] : "",
+        address:        (d.address ?? d.company_address ?? d.registered_address ?? d.address_line1 ?? d.addressLine1 ?? "").toString().trim(),
+        pincode:        (d.pincode ?? d.pin_code ?? d.pinCode ?? d.zip ?? d.zip_code ?? "").toString().trim(),
+        cin_no:         (d.cin_no ?? d.cinNo ?? d.cin ?? "").toString().trim(),
+        address_line1:  (d.address_line1 ?? d.address_line_1 ?? d.addressLine1 ?? "").toString().trim(),
+        address_line2:  (d.address_line2 ?? d.address_line_2 ?? d.addressLine2 ?? "").toString().trim(),
+        address_line3:  (d.address_line3 ?? d.address_line_3 ?? d.addressLine3 ?? "").toString().trim(),
+        phone:          (d.phone ?? d.phone_no ?? d.phoneNo ?? d.contact_no ?? "").toString().trim(),
+        email:          (d.email ?? d.company_email ?? "").toString().trim(),
+        gstin:          (d.gstin ?? d.gst_no ?? d.gstNo ?? "").toString().trim(),
+        state:          (d.state ?? d.state_name ?? "").toString().trim(),
+      };
+    }).filter(c => c.name);
+
+    setCompanies(mapped);
+    return mapped;
+  } catch (err) {
+    console.warn("[loadCompanies] failed:", err);
+    return companies; // keep whatever we already had rather than wiping it out
+  } finally {
+    setCompaniesLoading(false);
+  }
+}, [companies]);
+
+useEffect(() => { loadCompanies(); }, []);
 
   // ── Load pending plans ──
   // DIAGNOSTIC VERSION: distinguishes "request failed" (red, with exact HTTP
@@ -934,25 +1800,14 @@ export default function FabricPurchaseOrders() {
         .filter(p => p.rec_no);
 
       setPendingPlans(list);
-      console.log(`[loadPendingPlans] ${list.length} plans loaded — raw response:`, res);
+     
 
       if (list.length === 0) {
         // Request worked (no exception thrown) but returned nothing —
         // this is a DATA / DB-connection issue, not a routing bug.
-        console.warn(
-          "[loadPendingPlans] Request succeeded but returned 0 plans. " +
-          "Check the backend terminal for the line " +
-          '"[pending-purchase] connected database = ..." and compare it ' +
-          "against the database name you used in MySQL Workbench. Also " +
-          "verify production_plans has rows with purchase_qty > 0 that are " +
-          "not yet linked to an FPO (fpo_id IS NULL/0)."
-        );
+
         setPlanLoadError(
-          "EMPTY_RESULT::Request succeeded (no error) but the server returned 0 plans. " +
-          "This usually means the API is connected to a different database than the " +
-          "one you checked in MySQL Workbench, or every plan with purchase_qty > 0 is " +
-          "already linked to an FPO. Check the backend terminal log line starting with " +
-          '"[pending-purchase]" for the exact counts and connected database name.'
+          "EMPTY_RESULT::Please Create the Production Plan "
         );
       }
     } catch (err: any) {
@@ -1023,15 +1878,15 @@ export default function FabricPurchaseOrders() {
             f.plan_rec_no?.toLowerCase().includes(search.toLowerCase())
           )
         : all;
-      const start = (page - 1) * LIMIT;
-      setFpos(filtered.slice(start, start + LIMIT));
+      const start = (page - 1) * pageSize;
+      setFpos(filtered.slice(start, start + pageSize));
       setTotal(filtered.length);
     } catch {}
     finally { setLoading(false); }
-  }, [page, search]);
+  }, [page, search, pageSize]);
 
   useEffect(() => { fetchFpos(); }, [fetchFpos]);
-  useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => { setPage(1); }, [search, pageSize]);
 
   // ── Item recalc ──
   const recalcItem = (item: FpoItem): FpoItem => ({
@@ -1115,7 +1970,7 @@ export default function FabricPurchaseOrders() {
       const sortNo      = plan.order_sort_no        ? String(plan.order_sort_no).trim()        : "";
       const constn      = plan.constn_for_production ? String(plan.constn_for_production).trim() : "";
 
-      console.log("[selectPlan] autofill →", { sortNo, constn, qty, plan_id: plan.id });
+      
 
       const autofillItem = recalcItem({
         sort_no:      sortNo,   // ← from production_plans.order_sort_no
@@ -1124,6 +1979,7 @@ export default function FabricPurchaseOrders() {
         qty,                    // ← from production_plans.purchase_qty
         rate:         0,
         basic_value:  0,
+        unit:         "MTR",
       });
 
       setter(f => ({
@@ -1147,6 +2003,59 @@ export default function FabricPurchaseOrders() {
         `Plan ${plan.rec_no} linked`,
         `Autofilled → ${chips.join(" | ")}`
       );
+    };
+
+  // ── Link supplier — selecting a supplier auto-fills "Delivery To" with
+  //    a full multi-line block: registered address (Address Line 1,
+  //    District/City, State, Pincode, Country) followed by Contact Name,
+  //    Contact No, Agent Name, Email and GSTIN — each on its own labelled
+  //    line, whenever the Supplier Master has that field populated. Stays
+  //    fully editable afterwards; clearing the supplier (or picking one
+  //    with no data on file) clears the auto-filled text back out too,
+  //    the same "clears on unlink" behavior used by the plan picker. ──
+  const selectSupplier = (setter: React.Dispatch<React.SetStateAction<FabricPurchaseOrderPayload>>) =>
+    (name: string) => {
+      if (!name) {
+        setter(f => ({ ...f, supplier: "", delivery_to: "" }));
+        return;
+      }
+      const supplierObj = suppliers.find(s => s.name === name) ?? null;
+      const block        = formatSupplierDeliveryBlock(supplierObj);
+
+      setter(f => ({ ...f, supplier: name, delivery_to: block }));
+
+      if (block) {
+        pushToast("info", `Supplier "${name}" selected`, `Delivery To auto-filled with address, contact, agent & GST details.`);
+      } else {
+        pushToast("warning", `Supplier "${name}" selected`, "No address/contact details on file for this supplier — Delivery To left blank.");
+        console.warn(`[selectSupplier] No address fields matched for "${name}" — check the [getSuppliers] raw record logged on page load to find the correct column names.`, supplierObj);
+      }
+    };
+
+  // ── Link company (print header) ──
+  // Confirms, via toast, whether a logo was actually found for the
+  // selected company and — if so — which raw API field it came from
+  // (`_logoSourceKey`). If no logo was found at all, the toast says so
+  // clearly instead of silently printing a blank box, and points at the
+  // Company Details Master as the place to fix it.
+  const selectCompany = (setter: React.Dispatch<React.SetStateAction<FabricPurchaseOrderPayload>>) =>
+    (co: CompanyDetails | null) => {
+      setter(f => ({ ...f, company_id: co ? co.id : null }));
+      if (!co) return;
+
+      if (co.logo_url) {
+        pushToast(
+          "info",
+          `Company "${co.name}" selected`,
+          `Logo loaded (source field: "${co._logoSourceKey}"). This will print at the top of the Purchase Order.`
+        );
+      } else {
+        pushToast(
+          "warning",
+          `Company "${co.name}" selected`,
+          "No logo found on this company record — check the Company Details Master, or the console log for the raw field names available."
+        );
+      }
     };
 
   // ── Open create ──
@@ -1193,6 +2102,7 @@ export default function FabricPurchaseOrders() {
     qty:          Number(item?.qty) || 0,
     rate:         Number(item?.rate) || 0,
     basic_value:  Number(item?.basic_value) || 0,
+    unit:         item?.unit ?? "MTR",
   });
 
   const sanitizeFpo = (data: Partial<FabricPurchaseOrderPayload>): FabricPurchaseOrderPayload => ({
@@ -1201,7 +2111,6 @@ export default function FabricPurchaseOrders() {
     fpo_date:    data.fpo_date    ?? today(),
     delivery_dt: data.delivery_dt ?? today(),
     supplier:      data.supplier      ?? "",
-    billing_from:  data.billing_from  ?? "",
     delivery_to:   data.delivery_to   ?? "",
     pay_terms:     data.pay_terms     ?? "",
     pinning:       data.pinning       ?? "",
@@ -1216,6 +2125,15 @@ export default function FabricPurchaseOrders() {
     igst_pct:      Number(data.igst_pct)     || 0,
     purchase_qty:  Number(data.purchase_qty) || 0,
     plan_id:       data.plan_id ?? null,
+    due_date:         data.due_date         ?? data.delivery_dt ?? today(),
+    place_of_supply:  data.place_of_supply  ?? "",
+    ship_from:        data.ship_from        ?? "",
+    advance:          Number(data.advance)  || 0,
+    description:      data.description      ?? "",
+    // Normalise to a number (or null) — the API may return this as a
+    // string (e.g. "5") depending on the DB driver, and every comparison
+    // against `companies[].id` elsewhere in this file expects a number.
+    company_id:        data.company_id != null && data.company_id !== "" ? Number(data.company_id) : null,
     items: (data.items?.length ? data.items : [emptyItem()]).map(sanitizeItem),
   });
 
@@ -1300,82 +2218,350 @@ export default function FabricPurchaseOrders() {
     doPrintTable(data, fmtDate, fmt);
   };
 
-  // ── Print single FPO ──
-  const handlePrintFpo = (fpo: FabricPurchaseOrderPayload) => {
-    const itemRows = (fpo.items ?? []).map((it, i) => `
-      <tr>
-        <td>${i + 1}</td><td>${it.sort_no ?? ""}</td><td>${it.construction ?? ""}</td>
-        <td>${it.hsn_code ?? ""}</td>
-        <td style="text-align:right">${it.qty}</td>
-        <td style="text-align:right">${fmt(Number(it.rate) || 0)}</td>
-        <td style="text-align:right"><strong>${fmt(Number(it.basic_value) || 0)}</strong></td>
-      </tr>`).join("");
-    const t = calcTotals({ ...fpo, items: fpo.items ?? [] });
-    const win = window.open("", "_blank", "width=900,height=750");
-    if (!win) return;
+  // ── Print single FPO — professional "Purchase Order" letterhead ──
+  // Header: company logo/name/address/phone/email/GSTIN/state, sourced
+  // from whichever entity was picked in the "Company (Print Header)"
+  // dropdown on the FPO (fpo.company_id → looked up in `companies`),
+  // falling back to FALLBACK_COMPANY if nothing was picked or the master
+  // isn't wired up. Then an Order No/Date/Due Date grid, followed by
+  // Delivery To / Shipping From boxes, the item table (Quality / HSN / Qty /
+  // Unit / Price / Taxable Price / GST / Amount), amount-in-words + Sub
+  // Total/Total/Advance/Balance, an HSN-wise CGST+SGST tax summary, and a
+  // terms + signatory block. Printed entirely in Times New Roman for a
+  // formal, letterhead-style look (see the print <style> block below).
+  //
+  // DATA-FRESHNESS: printing from a table row previously used the row
+  // object exactly as returned by the LIST endpoint (no items[]). This is
+  // async: it opens the print window immediately (synchronously, so popup
+  // blockers don't block it), shows a lightweight "Loading…" placeholder,
+  // then re-fetches the full record by id before writing the final HTML.
+  // If that refetch fails, it falls back to whatever was passed in so
+  // printing never just breaks.
+  //
+  // COMPANY-ID TYPE-SAFETY: the lookup below Number()-normalizes both
+  // sides of the comparison, and logs fpo.company_id + the loaded
+  // companies list to the console right before matching, so if the header
+  // still falls back to FALLBACK_COMPANY it's immediately visible in
+  // DevTools whether that's because company_id came back empty from the
+  // API (→ backend/DB fix needed) or a genuine ID mismatch (→ wrong
+  // company picked).
+  //
+  // LOGO FIX (THIS REVISION): `c.logo_url` is already a resolved absolute
+  // URL, pointed at the BACKEND's origin, by the time it gets here
+  // (resolved once, at load time, in the getCompanyDetails() effect
+  // above) — so no special-casing is needed at the print call site
+  // itself. The <img> tag keeps an onerror fallback so a URL that's
+  // absolute-but-still-broken (deleted file, bad CORS, an unsaved blob:
+  // URL, etc.) degrades to a clean "No Logo" placeholder instead of a
+  // mystery blank box.
+  const handlePrintFpo = async (fpoInput: FabricPurchaseOrderPayload) => {
+    // Open synchronously — must happen directly inside the click handler,
+    // before any `await`, or most browsers' popup blockers will swallow it.
+    const win = window.open("", "_blank", "width=1050,height=800");
+    if (!win) {
+      pushToast("error", "Popup Blocked", "Please allow popups for this site to print the Purchase Order.");
+      return;
+    }
+    win.document.write(`<!DOCTYPE html><html><head><title>Purchase Order</title></head>
+      <body style="font-family:'Times New Roman',Times,serif;padding:60px;text-align:center;color:#64748b;">
+        Loading Purchase Order…
+      </body></html>`);
+    win.document.close();
+
+    // Re-fetch the full record so we're never printing stale/incomplete
+    // list-row data (list rows don't include items[]).
+    let fpo = fpoInput;
+    if (fpoInput.id) {
+      try {
+        const full = await getFabricPurchaseOrderById(fpoInput.id);
+        fpo = sanitizeFpo(full?.data ?? full);
+      } catch {
+        pushToast("warning", "Using Cached Data", "Could not refresh the latest FPO details — printing with the data currently on screen.");
+      }
+    }
+
+    const items = fpo.items ?? [];
+    const totals = calcTotals({ ...fpo, items });
+    const gstPct = (Number(fpo.cgst_pct) || 0) + (Number(fpo.sgst_pct) || 0) + (Number(fpo.igst_pct) || 0);
+    const cgstPct = Number(fpo.cgst_pct) || 0;
+    const sgstPct = Number(fpo.sgst_pct) || 0;
+
+    const itemRows = items.map((it, i) => {
+      const taxable = Number(it.basic_value) || 0;
+      const gstAmt  = +(taxable * gstPct / 100).toFixed(2);
+      const lineTot = +(taxable + gstAmt).toFixed(2);
+      return `
+        <tr>
+          <td class="c">${i + 1}</td>
+          <td>${it.construction || "—"}</td>
+          <td>${it.hsn_code || "—"}</td>
+          <td class="r">${fmt(Number(it.qty) || 0)}</td>
+          <td class="c">${it.unit || "MTR"}</td>
+          <td class="r">₹${fmt(Number(it.rate) || 0)}</td>
+          <td class="r">₹${fmt(Number(it.rate) || 0)}</td>
+          <td class="r">₹${fmt(gstAmt)}${gstPct ? ` (${gstPct}%)` : ""}</td>
+          <td class="r"><strong>₹${fmt(lineTot)}</strong></td>
+        </tr>`;
+    }).join("");
+
+    // HSN-wise tax summary (groups items sharing the same HSN/SAC code)
+    const hsnGroups: Record<string, number> = {};
+    items.forEach(it => {
+      const key = it.hsn_code || "—";
+      hsnGroups[key] = (hsnGroups[key] || 0) + (Number(it.basic_value) || 0);
+    });
+    const hsnRows = Object.entries(hsnGroups).map(([hsn, taxable]) => {
+      const cgstAmt = +(taxable * cgstPct / 100).toFixed(2);
+      const sgstAmt = +(taxable * sgstPct / 100).toFixed(2);
+      return `
+        <tr>
+          <td>${hsn}</td>
+          <td class="r">₹${fmt(taxable)}</td>
+          <td class="c">${cgstPct}%</td>
+          <td class="r">₹${fmt(cgstAmt)}</td>
+          <td class="c">${sgstPct}%</td>
+          <td class="r">₹${fmt(sgstAmt)}</td>
+          <td class="r">₹${fmt(cgstAmt + sgstAmt)}</td>
+        </tr>`;
+    }).join("");
+
+    const advance = Number((fpo as any).advance) || 0;
+    const balance = +(totals.net - advance).toFixed(2);
+
+    // Which company prints on this FPO's letterhead — the one the user
+    // picked in "Company (Print Header)" (fpo.company_id), looked up in
+    // the full Company Details Master list; fall back to FALLBACK_COMPANY
+    // if nothing was picked or the master isn't wired up yet. Both sides
+    // of the comparison are Number()-normalized so a company_id that came
+    // back as a string from the API still matches correctly.
+
+    const freshCompanies = await loadCompanies();
+const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_id)) || FALLBACK_COMPANY;
+    if (c === FALLBACK_COMPANY && (fpo as any).company_id) {
+      console.warn("[handlePrintFpo] FPO has company_id =", (fpo as any).company_id, "but no matching company was found in the loaded companies list — check that the Company Details Master still has this record.");
+    } else if (c === FALLBACK_COMPANY) {
+      console.warn("[handlePrintFpo] FPO has no company_id saved — pick a company in \"Company (Print Header)\" and re-save, or check that the backend/DB migration for company_id has been applied.");
+    }
+    // DIAGNOSTIC: confirms exactly what logo URL (already resolved to an
+    // absolute BACKEND URL at load time) is being embedded in the
+    // printed HTML, so a still-blank logo can be told apart from "no URL
+    // was ever found" — open the exact URL logged here directly in a
+    // browser tab to check whether the file itself is reachable.
+   
+
+    const companyName = c.name || "Your Company Name";
+    // Prefer the Company Master's single multi-line `address` field
+    // (falls back to formatCompanyAddress()'s address_line1/2/3 handling
+    // for any other data source). Preserve line breaks the user typed in
+    // the address textarea when printing.
+    const rawAddress   = c.address ? c.address.trim() : formatCompanyAddress(c);
+    const addressLines = rawAddress.replace(/\n/g, "<br/>");
+    const pinSuffix     = c.pincode && !rawAddress.includes(c.pincode) ? ` - ${c.pincode}` : "";
+
+    // Logo markup: onerror swaps the <img> for a plain "No Logo" box —
+    // same footprint as `.logo-img` — instead of leaving a broken/blank
+    // image if the (already-absolute) URL still fails to load.
+    const logoMarkup = c.logo_url
+      ? `<img class="logo-img" src="${c.logo_url}" onerror="this.outerHTML='<div class=&quot;logo-img&quot; style=&quot;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:9px;text-align:center;&quot;>No Logo</div>'" />`
+      : `<div class="logo-img" style="display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:9px;text-align:center;">No Logo</div>`;
+
+    win.document.open();
     win.document.write(`<!DOCTYPE html><html><head>
-      <title>FPO — ${fpo.fpo_no}</title>
+      <title>Purchase Order — ${fpo.fpo_no}</title>
       <style>
-        body{font-family:Arial,sans-serif;font-size:12px;color:#1e293b;margin:28px}
-        .hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;border-bottom:3px solid #7c3aed;padding-bottom:14px}
-        .co{font-size:18px;font-weight:800;color:#7c3aed}.dt h2{margin:0;font-size:20px}.dt .fno{font-size:15px;color:#7c3aed;font-weight:700}
-        .meta{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:18px;font-size:12px}
-        .meta-item label{display:block;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
-        .meta-item span{font-weight:600}
-        table{width:100%;border-collapse:collapse;margin-bottom:16px}
-        th{background:#7c3aed;color:#fff;padding:7px 10px;text-align:left;font-size:11px}
-        th.r{text-align:right}td{padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px}
-        tr:nth-child(even) td{background:#f8fafc}
-        .tots{float:right;width:280px;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
-        .tots table{margin:0}.tots td{border:none;padding:4px 6px}
-        .net{font-size:15px;font-weight:800;color:#7c3aed;border-top:2px solid #7c3aed;padding-top:6px;margin-top:4px}
-        .foot{clear:both;margin-top:30px;border-top:1px solid #e2e8f0;padding-top:12px;display:flex;justify-content:space-between;font-size:10px;color:#94a3b8}
-        @media print{body{margin:12px}}
+        * { box-sizing:border-box; }
+        body { font-family:'Times New Roman',Times,serif; font-size:12.5px; color:#1e293b; margin:24px; }
+        .po-topbar { height:6px; background:linear-gradient(90deg,#5b21b6,#7c3aed 55%,#0f766e); border-radius:4px; margin-bottom:16px; }
+        .po-title-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+        .po-title { font-family:'Times New Roman',Times,serif; font-size:20px; font-weight:800; letter-spacing:.02em; color:#3b0764; }
+        .po-copy-tag { font-size:10.5px; font-weight:700; color:#7c3aed; border:1px solid #c4b5fd; background:#faf5ff; border-radius:20px; padding:3px 12px; text-transform:uppercase; letter-spacing:.05em; }
+        table.po-outer { width:100%; table-layout:fixed; border-collapse:collapse; border:1.4px solid #334155; margin-bottom:0; }
+        table.po-outer td { border:1px solid #334155; padding:11px 13px; vertical-align:top; word-wrap:break-word; }
+        .logo-row { display:flex; gap:14px; align-items:flex-start; }
+        .logo-img { width:64px; height:64px; object-fit:contain; flex-shrink:0; border-radius:6px; border:1px solid #e2e8f0; background:#fff; padding:3px; }
+        .co-name { font-size:17px; font-weight:800; margin-bottom:3px; color:#1e293b; }
+        .co-line { font-size:11.5px; line-height:1.65; color:#334155; white-space:pre-line; }
+        table.meta-grid { width:100%; height:100%; table-layout:fixed; border-collapse:collapse; }
+        table.meta-grid td { border:1px solid #334155; padding:8px 11px; font-size:11.5px; vertical-align:middle; width:50%; color:#475569; }
+        table.meta-grid .val { display:block; font-weight:700; margin-top:2px; font-size:13px; color:#1e293b; }
+        .section-title { font-weight:800; font-size:10.5px; margin-bottom:5px; color:#5b21b6; text-transform:uppercase; letter-spacing:.06em; }
+        table.items { width:100%; border-collapse:collapse; }
+        table.items th, table.items td { border:1px solid #334155; padding:7px 9px; font-size:11.5px; }
+        table.items th { background:#5b21b6; color:#fff; text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.03em; font-family:'Times New Roman',Times,serif; }
+        table.items td.c, table.items th.c { text-align:center; }
+        table.items td.r, table.items th.r { text-align:right; }
+        table.items tbody tr:nth-child(even) td { background:#faf5ff; }
+        table.totals-box { width:100%; border-collapse:collapse; }
+        table.totals-box td { border:none; padding:4px 4px; font-size:12.5px; }
+        table.totals-box .lbl { color:#475569; }
+        table.totals-box .val { text-align:right; font-weight:700; }
+        table.totals-box .grand td { border-top:2px solid #334155; padding-top:8px; font-size:14px; font-weight:800; color:#3b0764; }
+        table.hsn-summary { width:100%; border-collapse:collapse; }
+        table.hsn-summary th, table.hsn-summary td { border:1px solid #334155; padding:6px 9px; font-size:11.5px; }
+        table.hsn-summary th { background:#0f766e; color:#fff; text-align:center; text-transform:uppercase; letter-spacing:.03em; font-size:10px; font-family:'Times New Roman',Times,serif; }
+        table.hsn-summary td.r { text-align:right; }
+        table.hsn-summary td.c { text-align:center; }
+        .sign-block { text-align:center; }
+        .sign-space { height:56px; }
+        .terms { font-size:11px; line-height:1.75; color:#334155; }
+        .po-footer-note { text-align:center; font-size:10px; color:#94a3b8; margin-top:14px; font-style:italic; }
+        @media print { body { margin:10px; } .po-topbar { -webkit-print-color-adjust:exact; print-color-adjust:exact; } table.items th, table.hsn-summary th { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
       </style>
     </head><body>
-      <div class="hdr">
-        <div class="co">FABRIC PURCHASE ORDER</div>
-        <div class="dt"><h2>FPO</h2><div class="fno">${fpo.fpo_no}</div>
-          <div style="font-size:11px;color:#64748b">Date: ${fpo.fpo_date ? fmtDate(fpo.fpo_date) : "—"}</div></div>
+
+      <div class="po-topbar"></div>
+      <div class="po-title-row">
+        <div class="po-title">Purchase Order</div>
+        <div class="po-copy-tag">Original</div>
       </div>
-      <div class="meta">
-        <div class="meta-item"><label>Supplier</label><span>${fpo.supplier}</span></div>
-        <div class="meta-item"><label>Order Plan No</label><span>${fpo.plan_rec_no || "—"}</span></div>
-        <div class="meta-item"><label>Order No</label><span>${fpo.order_no ?? "—"}</span></div>
-        <div class="meta-item"><label>Purchase Qty</label><span>${fpo.purchase_qty ? fmt(Number(fpo.purchase_qty)) : "—"}</span></div>
-        <div class="meta-item"><label>Billing From</label><span>${fpo.billing_from ?? "—"}</span></div>
-        <div class="meta-item"><label>Delivery To</label><span>${fpo.delivery_to ?? "—"}</span></div>
-        <div class="meta-item"><label>Pay Terms</label><span>${fpo.pay_terms ?? "—"}</span></div>
-        <div class="meta-item"><label>Rate Type</label><span>${fpo.rate_type ?? "—"}</span></div>
-        <div class="meta-item"><label>Delivery Date</label><span>${fpo.delivery_dt ? fmtDate(fpo.delivery_dt) : "—"}</span></div>
-        <div class="meta-item"><label>Pinning</label><span>${fpo.pinning ?? "—"}</span></div>
-        <div class="meta-item"><label>Packing Type</label><span>${fpo.packing_type ?? "—"}</span></div>
-        <div class="meta-item"><label>Freight</label><span>${fpo.freight ?? "—"}</span></div>
-        ${fpo.remarks ? `<div class="meta-item" style="grid-column:1/-1"><label>Remarks</label><span>${fpo.remarks}</span></div>` : ""}
-      </div>
-      <table>
-        <thead><tr><th>#</th><th>Sort No</th><th>Construction</th><th>HSN Code</th>
-          <th class="r">Qty</th><th class="r">Rate (₹)</th><th class="r">Basic Value (₹)</th></tr></thead>
-        <tbody>${itemRows}</tbody>
+
+      <table class="po-outer">
+        <tr>
+          <td style="width:56%;">
+            <div class="logo-row">
+              ${logoMarkup}
+              <div>
+                <div class="co-name">${companyName}</div>
+                ${addressLines ? `<div class="co-line">${addressLines}${pinSuffix}</div>` : ""}
+                ${c.gstin ? `<div class="co-line">GSTIN: ${c.gstin}</div>` : ""}
+                ${c.state ? `<div class="co-line">State: ${c.state}</div>` : ""}
+                ${c.phone ? `<div class="co-line">Phone no.: ${c.phone}</div>` : ""}
+                ${c.email ? `<div class="co-line">Email: ${c.email}</div>` : ""}
+                ${c.cin_no ? `<div class="co-line">CIN: ${c.cin_no}</div>` : ""}
+              </div>
+            </div>
+          </td>
+          <td style="padding:0;">
+            <table class="meta-grid">
+              <tr>
+                <td>Order No.<span class="val">${fpo.fpo_no || "—"}</span></td>
+                <td>Date<span class="val">${fmtDate(fpo.fpo_date) || "—"}</span></td>
+              </tr>
+              <tr>
+                <td colspan="2">Due Date<span class="val">${fmtDate((fpo as any).due_date || fpo.delivery_dt) || "—"}</span></td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="width:50%;">
+            <div class="section-title">Delivery To</div>
+            <div class="co-line">${fpo.delivery_to || "—"}</div>
+          </td>
+          <td style="width:50%;">
+            <div class="section-title">Shipping From</div>
+            <div class="co-line">${(fpo as any).ship_from || "—"}</div>
+          </td>
+        </tr>
       </table>
-      <div class="tots"><table>
-        <tr><td>Sub Total</td><td style="text-align:right">₹${fmt(t.sub)}</td></tr>
-        ${fpo.cgst_pct ? `<tr><td>CGST (${fpo.cgst_pct}%)</td><td style="text-align:right">₹${fmt(t.cgst)}</td></tr>` : ""}
-        ${fpo.sgst_pct ? `<tr><td>SGST (${fpo.sgst_pct}%)</td><td style="text-align:right">₹${fmt(t.sgst)}</td></tr>` : ""}
-        ${fpo.igst_pct ? `<tr><td>IGST (${fpo.igst_pct}%)</td><td style="text-align:right">₹${fmt(t.igst)}</td></tr>` : ""}
-        <tr class="net"><td><strong>Net Value</strong></td><td style="text-align:right"><strong>₹${fmt(t.net)}</strong></td></tr>
-      </table></div>
-      <div class="foot">
-        <span>Printed: ${new Date().toLocaleString("en-IN")}</span>
-        <span>System-generated document.</span>
-      </div>
+
+      <table class="items" style="margin-top:14px;">
+        <thead>
+          <tr>
+            <th class="c" style="width:26px;">#</th>
+            <th>Quality</th>
+            <th style="width:80px;">HSN/ SAC</th>
+            <th class="r" style="width:70px;">Quantity</th>
+            <th class="c" style="width:50px;">Unit</th>
+            <th class="r" style="width:80px;">Price/ Unit</th>
+            <th class="r" style="width:90px;">Taxable Price/ unit</th>
+            <th class="r" style="width:110px;">GST</th>
+            <th class="r" style="width:110px;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemRows}
+          <tr>
+            <td colspan="3" class="r" style="font-weight:700;">Total</td>
+            <td class="r" style="font-weight:700;">${fmt(items.reduce((s, i) => s + (Number(i.qty) || 0), 0))}</td>
+            <td></td><td></td>
+            <td class="r" style="font-weight:700;">₹${fmt(totals.sub)}</td>
+            <td></td>
+            <td class="r" style="font-weight:800;">₹${fmt(totals.net)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <table class="po-outer" style="margin-top:14px;">
+        <tr>
+          <td style="width:58%;">
+            <div class="section-title">Order Amount in Words</div>
+            <div style="font-weight:700; font-size:12.5px; margin-bottom:10px;">${amountInWords(totals.net)}</div>
+            ${(fpo as any).description || fpo.remarks ? `
+              <div class="section-title">Description</div>
+              <div class="co-line" style="margin-bottom:8px;">${(fpo as any).description || fpo.remarks}</div>
+            ` : ""}
+            ${fpo.pay_terms ? `
+              <div class="section-title">Payment mode</div>
+              <div class="co-line">${fpo.pay_terms}</div>
+            ` : ""}
+          </td>
+          <td>
+            <div class="section-title" style="margin-bottom:6px;">Amounts</div>
+            <table class="totals-box">
+              <tr><td class="lbl">Sub Total</td><td class="val">₹${fmt(totals.sub)}</td></tr>
+              <tr class="grand"><td class="lbl">Total</td><td class="val">₹${fmt(totals.net)}</td></tr>
+              <tr><td class="lbl">Advance</td><td class="val">₹${fmt(advance)}</td></tr>
+              <tr><td class="lbl">Balance</td><td class="val">₹${fmt(balance)}</td></tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+
+      <table class="hsn-summary" style="margin-top:14px;">
+        <thead>
+          <tr>
+            <th rowspan="2">HSN/ SAC</th>
+            <th rowspan="2">Taxable amount</th>
+            <th colspan="2">CGST</th>
+            <th colspan="2">SGST</th>
+            <th rowspan="2">Total Tax Amount</th>
+          </tr>
+          <tr><th>Rate</th><th>Amount</th><th>Rate</th><th>Amount</th></tr>
+        </thead>
+        <tbody>
+          ${hsnRows}
+          <tr>
+            <td style="font-weight:700;">Total</td>
+            <td class="r" style="font-weight:700;">₹${fmt(totals.sub)}</td>
+            <td></td>
+            <td class="r" style="font-weight:700;">₹${fmt(totals.cgst)}</td>
+            <td></td>
+            <td class="r" style="font-weight:700;">₹${fmt(totals.sgst)}</td>
+            <td class="r" style="font-weight:700;">₹${fmt(totals.cgst + totals.sgst)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <table class="po-outer" style="margin-top:14px; border-top:1px solid #334155;">
+        <tr>
+          <td style="width:58%;">
+            <div class="section-title">Terms and conditions</div>
+            <div class="terms">
+              1. Payment through Cheque/ Neft/Rtgs Only.<br/>
+              2. Goods Once Sold We can not take back.<br/>
+              3. We are not responsible for Any damages or Any loss in Transist.<br/>
+              4. All Dispute subject to ${c.state ? c.state.replace(/^\\d+-/, "") + " " : ""}Jurisdiction.<br/>
+              5. Our Guarantee is Upto Greige standard only.
+            </div>
+          </td>
+          <td class="sign-block">
+            <div style="font-weight:700; font-size:12.5px;">For : ${companyName}</div>
+            <div class="sign-space"></div>
+            <div style="font-weight:700; font-size:12px;">Authorized Signatory</div>
+          </td>
+        </tr>
+      </table>
+
+      <div class="po-footer-note">This is a system-generated Purchase Order and does not require a physical signature to be valid.</div>
+
+      <script>window.onload=()=>{window.print()}<\/script>
     </body></html>`);
     win.document.close(); win.focus();
-    setTimeout(() => win.print(), 400);
   };
 
   // ── Pagination ──
-  const totalPages = Math.max(1, Math.ceil(total / LIMIT));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const pageNums = (() => {
     const pages: number[] = [];
     let start = Math.max(1, page - 2);
@@ -1404,6 +2590,9 @@ export default function FabricPurchaseOrders() {
     fpoGenErr: string,
   ) => {
     const toggleSec = (k: keyof typeof formSec) => setSec(p => ({ ...p, [k]: !p[k] }));
+    const selectedCompany = f.company_id != null ? companies.find(c => Number(c.id) === Number(f.company_id)) ?? null : null;
+    const selectedSupplierObj = f.supplier ? suppliers.find(s => s.name === f.supplier) ?? null : null;
+    const supplierHasAddress = Boolean(formatSupplierAddress(selectedSupplierObj));
 
     return (
       <div className="fpo-modal-body">
@@ -1424,7 +2613,19 @@ export default function FabricPurchaseOrders() {
         {sec.details && (
           <div className="fpo-grid-3" style={{ paddingTop: 12, paddingBottom: 4 }}>
 
-            <FField label="FPO No" type="locked">
+            <div className="fpo-col-full">
+              <FField label="Company (Print Header)"  hint="Which entity's logo, address & GSTIN prints at the top of this Purchase Order">
+                <CompanyDropdown
+                  value={f.company_id ?? null}
+                  onChange={selectCompany(setF)}
+                  companies={companies}
+                  loading={companiesLoading}
+                />
+                <CompanyHeaderPreview company={selectedCompany} />
+              </FField>
+            </div>
+
+            <FField label="FPO No" >
               <div className={`fpo-display-field${fpoGen ? " fpo-display-field--loading" : (f.fpo_no ? " fpo-display-field--filled" : "")}`}>
                 {fpoGen
                   ? <span className="fpo-display-fetching"><Loader2 size={11} style={{ animation: "spin 1s linear infinite", display: "inline-block" }} /> Generating…</span>
@@ -1436,22 +2637,26 @@ export default function FabricPurchaseOrders() {
               <p className="fpo-hint">Auto-generated on new FPO</p>
             </FField>
 
-            <FField label="FPO Date" type="date">
+            <FField label="FPO Date" >
               <input className="fpo-input" type="date"
                 value={f.fpo_date} onChange={e => setF({ ...f, fpo_date: e.target.value })} />
             </FField>
 
-            <FField label="Supplier" required type="lookup">
+            <FField label="Due Date"  hint="Printed on the PO as the order's Due Date">
+              <input className="fpo-input" type="date"
+                value={(f as any).due_date || ""} onChange={e => setF({ ...f, due_date: e.target.value } as any)} />
+            </FField>
+
+            <FField label="Supplier" required >
               <SupplierDropdown
                 value={f.supplier}
-                onChange={name => setF({ ...f, supplier: name })}
+                onChange={selectSupplier(setF)}
                 suppliers={suppliers}
               />
             </FField>
 
-           
             {!isEdit ? (
-              <FField label="Order Plan No" required type="lookup"
+              <FField label="Order Plan No" required 
                 hint="">
                 <PlanDropdown
                   value={f.plan_id ?? null}
@@ -1482,7 +2687,7 @@ export default function FabricPurchaseOrders() {
               </FField>
             ) : (
               f.plan_id && (
-                <FField label="Order Plan No" type="locked">
+                <FField label="Order Plan No" >
                   <input className="fpo-input fpo-input--disabled fpo-input--plan" type="text" readOnly
                     value={f.plan_rec_no || "—"} />
                   <p className="fpo-hint">Plan link is permanent after creation</p>
@@ -1504,28 +2709,34 @@ export default function FabricPurchaseOrders() {
               </FField>
             ) : (
               f.plan_id && (
-                <FField label="Purchase Qty" type="locked">
+                <FField label="Purchase Qty" >
                   <input className="fpo-input fpo-input--disabled" type="text" readOnly
                     value={fmt(Number(f.purchase_qty) || 0)} />
                 </FField>
               )
             )}
 
-            <FField label="Billing From" type="text">
-              <input className="fpo-input" type="text" placeholder="Billing location"
-                value={f.billing_from} onChange={e => setF({ ...f, billing_from: e.target.value })} />
+            <div className="fpo-col-full">
+              <FField label="Delivery To" type={supplierHasAddress ? "autofill" : "text"} hint={supplierHasAddress ? "✓ Auto-filled from selected supplier's address, contact, agent & GST — editable" : "Address, PIN, State, Contact Name, Contact No, Agent Name, Email & GSTIN, one per line"}>
+                <textarea
+                  className={`fpo-input fpo-textarea${supplierHasAddress ? " fpo-input--autofill" : ""}`}
+                  placeholder="Delivery location"
+                  rows={5}
+                  value={f.delivery_to} onChange={e => setF({ ...f, delivery_to: e.target.value })} />
+              </FField>
+            </div>
+
+            <FField label="Shipping From"  hint="Printed on the PO — supplier's dispatch unit / mill address">
+              <input className="fpo-input" type="text" placeholder="e.g. supplier's dispatch unit / mill address"
+                value={(f as any).ship_from || ""} onChange={e => setF({ ...f, ship_from: e.target.value } as any)} />
             </FField>
 
-            <FField label="Delivery To" type="text">
-              <input className="fpo-input" type="text" placeholder="Delivery location"
-                value={f.delivery_to} onChange={e => setF({ ...f, delivery_to: e.target.value })} />
-            </FField>
 
             <FField label="Pay Terms" type="select">
               <select className="fpo-input" value={f.pay_terms}
                 onChange={e => setF({ ...f, pay_terms: e.target.value })}>
                 <option value="">Select</option>
-                {["Cash", "30 Days", "45 Days", "60 Days", "90 Days", "LC", "Advance"].map(t => (
+                {["Cash", "Credit", "30 Days", "45 Days", "60 Days", "90 Days", "LC", "Advance"].map(t => (
                   <option key={t}>{t}</option>
                 ))}
               </select>
@@ -1568,6 +2779,18 @@ export default function FabricPurchaseOrders() {
                 value={f.delivery_dt} onChange={e => setF({ ...f, delivery_dt: e.target.value })} />
             </FField>
 
+            <FField label="Advance" type="number" hint="Amount already paid — printed PO shows Balance = Total − Advance">
+              <input className="fpo-input" type="number" min={0} step="0.01" placeholder="0.00"
+                value={(f as any).advance || ""} onChange={e => setF({ ...f, advance: parseFloat(e.target.value) || 0 } as any)} />
+            </FField>
+
+            <div className="fpo-col-full">
+              <FField label="Description" type="text" hint="Printed under 'Order Amount in Words' — e.g. delivery timeline">
+                <input className="fpo-input" type="text" placeholder="e.g. DELIVERY 30-35 DAYS"
+                  value={(f as any).description || ""} onChange={e => setF({ ...f, description: e.target.value } as any)} />
+              </FField>
+            </div>
+
             <div className="fpo-col-full">
               <FField label="Remarks" type="text">
                 <input className="fpo-input" type="text" placeholder="Additional remarks"
@@ -1581,8 +2804,6 @@ export default function FabricPurchaseOrders() {
         <SectionHead title="Construction Items" open={sec.construction} onToggle={() => toggleSec("construction")} accent="#7c3aed" />
         {sec.construction && (
           <div style={{ paddingTop: 10, paddingBottom: 8 }}>
-
-           
 
             <div className="fpo-item-table-header">
               <span className="fpo-item-count">{f.items.length} item{f.items.length !== 1 ? "s" : ""}</span>
@@ -1609,6 +2830,7 @@ export default function FabricPurchaseOrders() {
                     <th className="fpo-ith fpo-ith--r" style={{ width: 80 }}>
                       Qty <FTypeBadge type={!isEdit && f.plan_id ? "autofill" : "number"} />
                     </th>
+                    <th className="fpo-ith" style={{ width: 80 }}>Unit</th>
                     <th className="fpo-ith fpo-ith--r" style={{ width: 90 }}>Rate</th>
                     <th className="fpo-ith fpo-ith--r" style={{ width: 110 }}>
                       Basic Value <FTypeBadge type="computed" />
@@ -1653,6 +2875,12 @@ export default function FabricPurchaseOrders() {
                             value={item.qty || ""}
                             onChange={e => updItem(idx, { qty: parseFloat(e.target.value) || 0 })}
                           />
+                        </td>
+                        <td className="fpo-itd">
+                          <select className="fpo-iinput" value={(item as any).unit || "MTR"}
+                            onChange={e => updItem(idx, { unit: e.target.value } as any)}>
+                            {["MTR", "KG", "PCS", "YDS", "ROLL"].map(u => <option key={u} value={u}>{u}</option>)}
+                          </select>
                         </td>
                         <td className="fpo-itd">
                           <input className="fpo-iinput fpo-iinput--r" type="number" min={0} step="0.01"
@@ -1746,7 +2974,10 @@ export default function FabricPurchaseOrders() {
         .fpo-search-wrap svg { position:absolute; left:10px; top:50%; transform:translateY(-50%); }
         .fpo-search { width:100%; padding:8px 12px 8px 34px; border:1px solid #cbd5e1; border-radius:8px; font-size:13px; font-family:'DM Sans',sans-serif; outline:none; background:#fff; }
         .fpo-search:focus { border-color:#7c3aed; }
-        .fpo-rec-count { font-size:13px; color:#64748b; margin-left:auto; white-space:nowrap; }
+        .fpo-rec-count { font-size:13px; color:#64748b; white-space:nowrap; }
+        .fpo-page-size { display:flex; align-items:center; gap:6px; font-size:13px; color:#64748b; margin-left:auto; }
+        .fpo-page-size select { border:1px solid #cbd5e1; border-radius:6px; padding:5px 8px; font-size:13px; font-family:'DM Sans',sans-serif; background:#fff; cursor:pointer; outline:none; }
+        .fpo-page-size select:focus { border-color:#7c3aed; }
 
         .fpo-card { background:#fff; border-radius:12px; border:1px solid #e2e8f0; overflow:hidden; box-shadow:0 1px 6px rgba(0,0,0,0.07); margin-bottom:24px; }
         .fpo-table-wrap { overflow-x:auto; }
@@ -1757,20 +2988,22 @@ export default function FabricPurchaseOrders() {
         .fpo-table th.th-c { text-align:center; }
         .fpo-table tbody tr:nth-child(odd)  td { background:#fff; }
         .fpo-table tbody tr:nth-child(even) td { background:#faf5ff; }
-        .fpo-table tbody tr:hover td { filter:brightness(0.97); }
+        .fpo-table tbody tr:hover td { background:#f3f0ff; }
         .fpo-table td { padding:10px 12px; color:#374151; font-size:12px; white-space:nowrap; }
         .fpo-fpo-no { font-family:'DM Mono',monospace; font-size:11px; font-weight:700; color:#7c3aed; background:#faf5ff; border:1px solid #c4b5fd; border-radius:6px; padding:2px 7px; }
         .fpo-plan-rec { font-weight:600; color:#0f766e; }
         .fpo-td-num { text-align:right; font-family:'DM Mono',monospace; }
         .fpo-td-c { text-align:center; }
         .fpo-empty { text-align:center; padding:40px 16px; color:#94a3b8; font-size:13px; }
-        .fpo-action-group { display:flex; align-items:center; gap:5px; justify-content:center; }
-        .fpo-edit-btn { display:inline-flex; align-items:center; gap:3px; background:#faf5ff; color:#7c3aed; border:1px solid #c4b5fd; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; }
-        .fpo-edit-btn:hover { background:#ede9fe; }
-        .fpo-print-row-btn { display:inline-flex; align-items:center; gap:3px; background:#f0f9ff; color:#0284c7; border:1px solid #bae6fd; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; }
-        .fpo-print-row-btn:hover { background:#e0f2fe; }
-        .fpo-del-btn { display:inline-flex; align-items:center; gap:3px; background:#fff1f2; color:#dc2626; border:1px solid #fca5a5; padding:4px 8px; border-radius:6px; font-size:11px; font-weight:700; cursor:pointer; }
-        .fpo-del-btn:hover { background:#fee2e2; }
+
+        .fpo-row-menu-btn { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border:1px solid #e2e8f0; background:#fff; border-radius:7px; cursor:pointer; color:#64748b; transition:border-color .15s, background .15s, color .15s; }
+        .fpo-row-menu-btn:hover { background:#faf5ff; border-color:#c4b5fd; color:#7c3aed; }
+        .fpo-row-menu-panel { background:#fff; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 10px 30px rgba(15,23,42,.16); overflow:hidden; animation:ddSlide .12s ease; padding:4px; }
+        .fpo-row-menu-item { display:flex; align-items:center; gap:9px; width:100%; padding:9px 11px; border:none; background:transparent; border-radius:7px; cursor:pointer; font-size:12.5px; font-weight:600; color:#374151; font-family:'DM Sans',sans-serif; text-align:left; }
+        .fpo-row-menu-item:hover { background:#f8fafc; }
+        .fpo-row-menu-item--danger { color:#dc2626; }
+        .fpo-row-menu-item--danger:hover { background:#fef2f2; }
+        .fpo-row-menu-divider { height:1px; background:#f1f5f9; margin:3px 4px; }
 
         .fpo-pg-bar { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-top:1px solid #f1f5f9; background:#faf5ff; font-size:12px; color:#64748b; flex-wrap:wrap; gap:8px; }
         .fpo-pg-btns { display:flex; gap:4px; align-items:center; }
@@ -1806,19 +3039,17 @@ export default function FabricPurchaseOrders() {
         .fpo-input--disabled { background:#f1f5f9; color:#6b7280; cursor:not-allowed; }
         .fpo-input--autofill { border-color:#99f6e4; background:#f0fdfa; color:#0f766e; font-weight:700; }
         .fpo-input--plan  { color:#0f766e; font-weight:700; }
+        .fpo-textarea { resize:vertical; line-height:1.6; font-family:'DM Sans',sans-serif; white-space:pre-line; }
         .fpo-error-banner { display:flex; align-items:center; gap:8px; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; color:#ef4444; padding:10px 16px; margin-bottom:14px; font-size:13px; }
 
-        /* Autofill banner inside Construction Items section */
         .fpo-autofill-banner { display:flex; align-items:flex-start; gap:8px; background:#f0fdfa; border:1px solid #99f6e4; border-radius:8px; color:#0f766e; padding:9px 13px; margin-bottom:10px; font-size:12.5px; line-height:1.5; }
 
-        /* DIAGNOSTIC banner — explains exactly why the plan list is empty */
         .fpo-plan-diag { display:flex; align-items:flex-start; gap:7px; border-radius:8px; padding:9px 11px; margin-top:6px; font-size:11.5px; line-height:1.5; }
         .fpo-plan-diag--error { background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; }
         .fpo-plan-diag--warn  { background:#fffbeb; border:1px solid #fde68a; color:#92400e; }
         .fpo-plan-diag-retry { margin-left:auto; flex-shrink:0; background:#fff; border:1px solid currentColor; color:inherit; border-radius:6px; padding:2px 9px; font-size:11px; font-weight:700; cursor:pointer; font-family:'DM Sans',sans-serif; }
         .fpo-plan-diag-retry:hover { opacity:.8; }
 
-        /* Plan autofill preview chips (below plan picker when plan is selected) */
         .fpo-plan-autofill-preview { margin-top:6px; }
         .fpo-plan-preview-row { display:flex; flex-wrap:wrap; gap:6px; }
         .fpo-plan-preview-chip { display:inline-flex; align-items:center; gap:4px; background:#f0fdfa; border:1px solid #99f6e4; border-radius:6px; padding:3px 8px; font-size:11px; }
@@ -1850,12 +3081,10 @@ export default function FabricPurchaseOrders() {
         .fpo-iinput { width:100%; border:1px solid #cbd5e1; border-radius:4px; padding:4px 6px; font-size:12px; font-family:'DM Sans',sans-serif; outline:none; color:#1e293b; background:#fff; }
         .fpo-iinput:focus { border-color:#7c3aed; }
         .fpo-iinput--r { text-align:right; }
-        /* Teal highlight for autofilled item cells */
         .fpo-iinput--autofill { border-color:#99f6e4 !important; background:#f0fdfa !important; color:#0f766e !important; font-weight:700 !important; }
         .fpo-del-row-btn { background:#fff1f2; border:1px solid #fca5a5; color:#dc2626; border-radius:6px; width:26px; height:26px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
         .fpo-del-row-btn:hover { background:#fee2e2; }
 
-        /* Plan option in dropdown — richer layout */
         .fpo-plan-option { flex-direction:column; align-items:flex-start; gap:4px; }
         .fpo-plan-opt-row1 { display:flex; align-items:center; gap:8px; width:100%; }
         .fpo-plan-opt-no { font-family:'DM Mono',monospace; font-size:13px; font-weight:700; color:#0f766e; }
@@ -1866,6 +3095,29 @@ export default function FabricPurchaseOrders() {
         .fpo-plan-chip--constn { background:#f0f9ff; color:#0284c7; font-family:'DM Mono',monospace; }
         .fpo-plan-opt-customer { font-size:11px; color:#94a3b8; }
         .fpo-plan-qty-badge { background:#f0fdfa; color:#0f766e; border:1px solid #99f6e4; border-radius:4px; padding:1px 6px; font-size:11px; font-weight:700; font-family:'DM Mono',monospace; }
+
+        .fpo-co-trigger.has-value { border-color:#99f6e4; background:#f0fdfa; }
+        .fpo-co-selected { display:flex; align-items:center; gap:8px; overflow:hidden; }
+        .fpo-co-selected-body { display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+        .fpo-co-selected-name { font-weight:700; color:#0f766e; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.3; }
+        .fpo-co-selected-address { font-size:10.5px; color:#0d9488; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.3; }
+        .fpo-co-avatar { flex-shrink:0; width:26px; height:26px; border-radius:7px; background:#f5f3ff; border:1px solid #ddd6fe; display:flex; align-items:center; justify-content:center; overflow:hidden; color:#7c3aed; }
+        .fpo-co-avatar img { width:100%; height:100%; object-fit:contain; }
+        .fpo-co-option { align-items:center; }
+        .fpo-co-opt-body { flex:1; min-width:0; }
+        .fpo-co-opt-name { font-size:13px; font-weight:700; color:#1e293b; }
+        .fpo-co-opt-meta { display:flex; gap:5px; font-size:11px; color:#94a3b8; font-family:'DM Mono',monospace; }
+        .fpo-co-opt-address { font-size:10.5px; color:#7c3aed; opacity:.8; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .fpo-co-firm-badge { background:#fef9c3; color:#92400e; border-radius:5px; padding:2px 8px; font-size:10px; font-weight:800; letter-spacing:.03em; flex-shrink:0; }
+        .fpo-co-preview { margin-top:8px; border:1px solid #99f6e4; background:#f0fdfa; border-radius:10px; padding:10px 12px; }
+        .fpo-co-preview-label { font-size:10px; font-weight:800; color:#0f766e; text-transform:uppercase; letter-spacing:.05em; margin-bottom:7px; }
+        .fpo-co-preview-label span { font-weight:600; text-transform:none; letter-spacing:0; color:#0d9488; opacity:.8; }
+        .fpo-co-preview-body { display:flex; gap:10px; align-items:flex-start; }
+        .fpo-co-preview-avatar { flex-shrink:0; width:34px; height:34px; border-radius:8px; background:#fff; border:1px solid #99f6e4; display:flex; align-items:center; justify-content:center; overflow:hidden; color:#0f766e; }
+        .fpo-co-preview-avatar img { width:100%; height:100%; object-fit:contain; }
+        .fpo-co-preview-text { flex:1; min-width:0; }
+        .fpo-co-preview-name { font-size:13.5px; font-weight:800; color:#134e4a; margin-bottom:2px; }
+        .fpo-co-preview-line { font-size:11.5px; color:#0f766e; line-height:1.6; }
 
         .fpo-hsn-trigger { width:100%; display:flex; align-items:center; justify-content:space-between; gap:4px; padding:4px 7px; height:28px; border:1px solid #cbd5e1; border-radius:5px; background:#fff; cursor:pointer; font-family:'DM Sans',sans-serif; outline:none; text-align:left; transition:border-color .15s, box-shadow .15s; }
         .fpo-hsn-trigger:hover { border-color:#7c3aed; }
@@ -1937,6 +3189,7 @@ export default function FabricPurchaseOrders() {
         .fpo-sup-trigger.open { border-color:#7c3aed; box-shadow:0 0 0 3px rgba(124,58,237,.12); }
         .fpo-sup-trigger.has-value { border-color:#c4b5fd; background:#faf5ff; }
         .fpo-sup-trigger:disabled { background:#f8fafc; color:#94a3b8; cursor:not-allowed; }
+        .fpo-co-trigger.has-value { height:44px; }
         .fpo-sup-content { flex:1; overflow:hidden; min-width:0; }
         .fpo-sup-placeholder { color:#9ca3af; }
         .fpo-sup-selected { display:flex; align-items:center; gap:8px; overflow:hidden; }
@@ -2006,6 +3259,13 @@ export default function FabricPurchaseOrders() {
               placeholder="Search FPO no, supplier, plan no…"
               value={search} onChange={e => setSearch(e.target.value)} />
           </div>
+          <div className="fpo-page-size">
+            <span>Show</span>
+            <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
+              {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <span>entries</span>
+          </div>
           <span className="fpo-rec-count">{total} record(s)</span>
         </div>
 
@@ -2022,7 +3282,7 @@ export default function FabricPurchaseOrders() {
                   {width >= 640  && <th>Plan No</th>}
                   {width >= 768  && <th>Order No</th>}
                   {width >= 768  && <th className="th-r">Purchase Qty</th>}
-                  {width >= 960  && <th>Billing From</th>}
+                 
                   {width >= 960  && <th>Pay Terms</th>}
                   {width >= 1024 && <th>Rate Type</th>}
                   <th className="th-r">Net Value</th>
@@ -2040,25 +3300,25 @@ export default function FabricPurchaseOrders() {
                   </td></tr>
                 ) : fpos.map((o, i) => (
                   <tr key={o.id}>
-                    <td style={{ color: "#94a3b8" }}>{(page - 1) * LIMIT + i + 1}</td>
+                    <td style={{ color: "#94a3b8" }}>{(page - 1) * pageSize + i + 1}</td>
                     <td><span className="fpo-fpo-no">{o.fpo_no}</span></td>
                     <td style={{ color: "#64748b" }}>{o.fpo_date ? fmtDate(o.fpo_date) : "—"}</td>
                     <td style={{ fontWeight: 600 }}>{o.supplier}</td>
                     {width >= 640  && <td><span className="fpo-plan-rec">{o.plan_rec_no || "—"}</span></td>}
                     {width >= 768  && <td style={{ fontFamily: "'DM Mono',monospace", fontSize: 12 }}>{o.order_no || "—"}</td>}
                     {width >= 768  && <td className="fpo-td-num">{o.purchase_qty ? fmt(Number(o.purchase_qty)) : "—"}</td>}
-                    {width >= 960  && <td>{o.billing_from}</td>}
+              
                     {width >= 960  && <td>{o.pay_terms}</td>}
                     {width >= 1024 && <td>{o.rate_type}</td>}
                     <td className="fpo-td-num" style={{ fontWeight: 700, color: "#7c3aed" }}>
                       ₹{fmt(Number(o.net_value) || 0)}
                     </td>
                     <td className="fpo-td-c">
-                      <div className="fpo-action-group">
-                        <button className="fpo-edit-btn" onClick={() => handleOpenEdit(o)}>✏️ Edit</button>
-                        <button className="fpo-print-row-btn" onClick={() => handlePrintFpo(o)}><Printer size={12} /></button>
-                        <button className="fpo-del-btn" onClick={() => { setDeleteTarget(o); setDeleteError(""); }}>🗑</button>
-                      </div>
+                      <RowActionsMenu
+                        onEdit={() => handleOpenEdit(o)}
+                        onPrint={() => handlePrintFpo(o)}
+                        onDelete={() => { setDeleteTarget(o); setDeleteError(""); }}
+                      />
                     </td>
                   </tr>
                 ))}

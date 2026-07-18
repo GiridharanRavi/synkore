@@ -5,6 +5,8 @@ import {
   Routes,
   Route,
   Navigate,
+  useNavigate,
+  useSearchParams,
 } from 'react-router-dom';
 
 import {
@@ -66,12 +68,24 @@ import HsnMaster           from './pages/admin/master/HsnMaster';
 import CurrencyMaster      from './pages/admin/master/CurrencyMaster';
 import DiscountTypeMaster  from './pages/admin/master/DiscountTypeMaster';
 import EmployeeMaster      from './pages/admin/master/EmployeeMaster';
+import CompanyDetails from './pages/admin/master/CompanyDetails';
+
+import AccountDetailsMaster from './pages/admin/AccountDetailsMaster';
+import FabricStock from "./pages/admin/FabricStock";
 
 /* Procurement Pages */
 import YarnPurchaseOrderMaster  from './pages/admin/YarnPurchaseOrderMaster';
 import YarnPurchaseInwardMaster from './pages/admin/YarnPurchaseInwardMaster';
 
-import OrderStatusMaster from './pages/admin/OrderStatusMaster'; 
+import OrderStatusMaster from './pages/admin/OrderStatusMaster';
+import FabricPackingList from "./pages/admin/FabricPackingList";
+import FabricInvoice     from "./pages/admin/Invoice";       // ← Sales Invoice
+import FabricPurchaseInvoice from "./pages/admin/PurchaseInvoice"; // ← NEW — Purchase Invoice
+
+import YarnStock from './pages/admin/YarnStock';
+import YarnPackingList from './pages/admin/YarnPackingList';
+import EmployeeTracker from './pages/admin/master/EmployeeTracker';   // ← NEW — Employee Expense Tracker
+
 
 import { ReactNode } from 'react';
 
@@ -109,6 +123,41 @@ function ClientRoute({ children }: { children: ReactNode }) {
   if (!user) return <Navigate to="/login" replace />;
   if (user.role !== 'client') return <Navigate to={defaultPath(user.role)} replace />;
   return <>{children}</>;
+}
+
+
+function FabricPackingListPage() {
+  const navigate = useNavigate();
+  return (
+    <FabricPackingList
+      onNavigateToInvoice={({ invoice_no }) => {
+        navigate(`/admin/sales-invoice?invoice=${encodeURIComponent(invoice_no)}`);
+      }}
+    />
+  );
+}
+
+// ─── FabricInvoice wrapper (Sales) ─────────────────────────────────────────────
+// Reads ?invoice=... from the URL (set by the wrapper above) and passes it to
+// FabricInvoice as initialFilter so the page opens pre-filtered to that
+// invoice. Works equally well when navigated to directly with no query param.
+function FabricInvoicePage() {
+  const [searchParams] = useSearchParams();
+  const invoiceFilter = searchParams.get('invoice') || undefined;
+  return <FabricInvoice initialFilter={invoiceFilter} />;
+}
+
+// ─── FabricPurchaseInvoice wrapper (Purchase) ── NEW ───────────────────────────
+// Same pattern as FabricInvoicePage above, but for the purchase side. Reads
+// ?invoice=... from the URL — set this when navigating here right after
+// converting an FPO (see the "Create Purchase Invoice" button in
+// FabricPurchaseOrders.tsx) so the page opens pre-filtered to the invoice
+// that was just created. Works fine with no query param too (opens showing
+// the full list).
+function FabricPurchaseInvoicePage() {
+  const [searchParams] = useSearchParams();
+  const invoiceFilter = searchParams.get('invoice') || undefined;
+  return <FabricPurchaseInvoice initialFilter={invoiceFilter} />;
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -155,8 +204,12 @@ function AppRoutes() {
         <Route path="master/yarn"      element={<YarnMaster />} />
          <Route path="order-status" element={<OrderStatusMaster  />} />
 
+         <Route path="yarn-stock"           element={<YarnStock />} />
+         <Route path="yarn-packing-list" element={<YarnPackingList />} />
+
         {/* Masters — new */}
         <Route path="master/employee"         element={<EmployeeMaster />} />
+        <Route path="master/employee-tracker" element={<EmployeeTracker />} />   {/* ← NEW */}
         <Route path="master/service-types"    element={<ServiceTypeMaster />} />
         <Route path="master/packages"         element={<PackageMaster />} />
         <Route path="master/regions"          element={<RegionMaster />} />
@@ -168,6 +221,14 @@ function AppRoutes() {
         <Route path="master/hsn-codes"        element={<HsnMaster />} />
         <Route path="master/currency"         element={<CurrencyMaster />} />
         <Route path="master/discount-types"   element={<DiscountTypeMaster />} />
+        <Route path="master/company-details" element={<CompanyDetails />} />
+
+
+         <Route path="account-details" element={<AccountDetailsMaster />} />
+          <Route path="fabric-stock" element={<FabricStock />} />
+          <Route path="packing-list" element={<FabricPackingListPage />} />
+          <Route path="sales-invoice" element={<FabricInvoicePage />} />
+          <Route path="purchase-invoice" element={<FabricPurchaseInvoicePage />} />   {/* ← NEW */}
 
         {/* Production */}
         <Route path="production" element={<ProductionMaster />} />

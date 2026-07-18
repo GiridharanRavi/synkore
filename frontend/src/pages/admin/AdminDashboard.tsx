@@ -1,11 +1,16 @@
 // frontend/src/pages/admin/AdminDashboard.tsx
 // Professional CoreUI-style Admin Dashboard — Fully Responsive
 // UPDATED: "Other Master" expanded into a sub-dropdown with all sub-masters
+// UPDATED: Added "Account Details" item to the profile dropdown menu
+// UPDATED: Fabric Purchase now has 4 ordered sub-items:
+//          Fabric Purchase Order -> Fabric Purchase Inward -> Fabric Stock -> Packing List
+// UPDATED: Added "Employee Master" dropdown -> Employee Details -> Employee Tracker
 
 import {
   Link,
   Outlet,
   useLocation,
+  useNavigate,
 } from 'react-router-dom';
 
 import {
@@ -51,6 +56,9 @@ import {
   Boxes,
   CalendarClock,
   SlidersHorizontal,
+  IdCard,
+  Warehouse,
+  PackageCheck,
  
 } from 'lucide-react';
 
@@ -64,6 +72,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 // import NotificationBell from './NotificationBell';
 import { CgProductHunt } from 'react-icons/cg';
+import { BsBank } from 'react-icons/bs';
 
 /* ── Breakpoints ─────────────────────────────────────────── */
 const BP = { mobile: 576, tablet: 768, desktop: 992 };
@@ -84,9 +93,15 @@ interface NavGroup {
   items: NavItem[];
 }
 
+/* ── Employee Master sub-items ───────────────────────────── */
+/*   Order: Employee Details -> Employee Tracker  */
+const employeeMasterSubItems: NavItem[] = [
+  { path: '/admin/master/employee',   label: 'Employee Details',       icon: <User size={13} /> },
+  { path: '/admin/master/employee-tracker', label: 'Employee Tracker',  icon: <CalendarClock size={13} /> },
+];
+
 /* ── Other Master sub-items ──────────────────────────────── */
 const otherMasterSubItems: NavItem[] = [
-   { path: '/admin/master/employee',   label: 'Employee Master',       icon: <User size={13} /> },
   { path: '/admin/master/service-types',   label: 'Service Type Master',       icon: <Users size={13} /> },
   { path: '/admin/master/packages',           label: 'Package Master',        icon: <Globe size={13} /> },
   { path: '/admin/master/regions',            label: 'Region Master',         icon: <UserCheck size={13} /> },
@@ -98,6 +113,16 @@ const otherMasterSubItems: NavItem[] = [
   { path: '/admin/master/currency',             label: 'Currency Master',          icon: <Ruler size={13} /> },
   { path: '/admin/master/discount-types',               label: 'Discount Type Master',      icon: <Boxes size={13} /> },
   { path: '/admin/master/hsn-codes',         label: 'HSN Code Master',      icon: <Tag size={13} /> },
+  
+];
+
+/* ── Fabric Purchase sub-items ──────────────────────────── */
+/*   Order: Fabric Purchase Order -> Fabric Purchase Inward
+     -> Fabric Stock -> Packing List (split into two separate items)  */
+const fabricPurchaseSubItems: NavItem[] = [
+  { path: '/admin/jobwork',                 label: 'Fabric Purchase Order',  icon: <ClipboardList size={13} /> },
+  { path: '/admin/inward',                  label: 'Fabric Purchase Inward', icon: <ArrowDownToLine size={13} /> },
+  { path: '/admin/fabric-stock',            label: 'Fabric Purchase Stock',           icon: <Warehouse size={13} /> },
   
 ];
 
@@ -117,6 +142,14 @@ const navGroups: NavGroup[] = [
       { path: '/admin/master/suppliers',        label: 'Supplier Master',        icon: <Factory size={14} /> },
       // { path: '/admin/master/delivery-address', label: 'Delivery Address',       icon: <MapPin size={14} /> },
       { path: '/admin/master/yarn',             label: 'Yarn Master',            icon: <Tangent size={14} /> },
+       { path: '/admin/master/company-details',             label: 'Company Details Master',            icon: <Banknote size={14} /> },
+      // ── Employee Master — has sub-items ──
+      {
+        path: '/admin/master/employee',
+        label: 'Employee Master',
+        icon: <User size={14} />,
+        subItems: employeeMasterSubItems,
+      },
       // ── Other Master — has sub-items ──
       {
         path: '/admin/master/other',
@@ -166,10 +199,8 @@ const navGroups: NavGroup[] = [
       path: '/admin/purchase/fabric',
       label: 'Fabric Purchase',
       icon: <Layers size={14} />,
-      subItems: [
-        { path: '/admin/jobwork',  label: 'Fabric Purchase Order',  icon: <ClipboardList size={13} /> },
-        { path: '/admin/inward', label: 'Fabric Purchase Inward', icon: <ArrowDownToLine size={13} /> },
-      ],
+      // ── UPDATED: Fabric Purchase Order -> Fabric Purchase Inward -> Fabric Stock -> Packing List ──
+      subItems: fabricPurchaseSubItems,
     },
     {
       path: '/admin/purchase/yarn',
@@ -178,6 +209,8 @@ const navGroups: NavGroup[] = [
       subItems: [
         { path: '/admin/yarn-order',  label: 'Yarn Purchase Order',  icon: <ClipboardList size={13} /> },
         { path: '/admin/yarn-inward', label: 'Yarn Purchase Inward', icon: <ArrowDownToLine size={13} /> },
+        { path: '/admin/yarn-stock', label: 'Yarn Purchase Stock', icon: <Warehouse size={13} /> },
+        // { path: '/admin/yarn-packing-list', label: 'Yarn Packing List', icon: <PackageCheck size={13} /> },
       ],
     },
   ],
@@ -200,17 +233,30 @@ const navGroups: NavGroup[] = [
     accentColor: 'rgba(236,72,153,0.12)',
     headerIcon: <Droplets size={16} />,
     items: [
-      { path: '/admin/dyeing',  label: 'Dyeing Process',    icon: <Droplets size={14} /> },
-      { path: '/admin/outward', label: 'Outward To Vendor', icon: <ArrowUpFromLine size={14} /> },
+     { path: '/admin/packing-list',            label: 'Packing List',           icon: <PackageCheck size={13} /> },
     ],
   },
+  // {
+  //   title: 'Dispatch & Logistics',
+  //   color: '#22c55e',
+  //   accentColor: 'rgba(34,197,94,0.12)',
+  //   headerIcon: <Truck size={16} />,
+  //   items: [
+  //     { path: '/admin/dispatch', label: 'Final Dispatch', icon: <Truck size={14} /> },
+  //   ],
+  // },
+
   {
-    title: 'Dispatch & Logistics',
-    color: '#22c55e',
-    accentColor: 'rgba(34,197,94,0.12)',
-    headerIcon: <Truck size={16} />,
+    title: 'Finance & Billing',
+    color: '#f97316',
+    accentColor: 'rgba(249,115,22,0.12)',
+    headerIcon: <Banknote size={16} />,
     items: [
-      { path: '/admin/dispatch', label: 'Final Dispatch', icon: <Truck size={14} /> },
+      { path: '/admin/sales-invoice', label: 'Sales Invoices',       icon: <Receipt size={14} /> },
+       { path: '/admin/purchase-invoice', label: 'Fabric Purchase Invoices',       icon: <Receipt size={14} /> },
+       { path: '/admin/yarn-invoice', label: 'Yarn Purchase Invoices',       icon: <Receipt size={14} /> },
+      // { path: '/admin/finance/payments', label: 'Payments',       icon: <CreditCard size={14} /> },
+      // { path: '/admin/finance/ledger',   label: 'General Ledger', icon: <BookOpen size={14} /> },
     ],
   },
   {
@@ -220,20 +266,19 @@ const navGroups: NavGroup[] = [
     headerIcon: <BarChart2 size={16} />,
     items: [
       { path: '/admin/reports/sales',      label: 'Sales Report',      icon: <TrendingUp size={14} /> },
-      { path: '/admin/reports/production', label: 'Production Report', icon: <PieChart size={14} /> },
+      { path: '/admin/reports/production', label: 'Purchase Report', icon: <PieChart size={14} /> },
       { path: '/admin/reports/dispatch',   label: 'Dispatch Summary',  icon: <FileText size={14} /> },
       { path: '/admin/reports/overview',   label: 'Business Overview', icon: <BarChart2 size={14} /> },
     ],
   },
+  
   {
-    title: 'Finance & Billing',
-    color: '#f97316',
-    accentColor: 'rgba(249,115,22,0.12)',
-    headerIcon: <Banknote size={16} />,
+    title: 'Account',
+    color: '#64748b',
+    accentColor: 'rgba(100,116,139,0.12)',
+    headerIcon: <IdCard size={16} />,
     items: [
-      { path: '/admin/finance/invoices', label: 'Invoices',       icon: <Receipt size={14} /> },
-      { path: '/admin/finance/payments', label: 'Payments',       icon: <CreditCard size={14} /> },
-      { path: '/admin/finance/ledger',   label: 'General Ledger', icon: <BookOpen size={14} /> },
+      { path: '/admin/account-details',  label: 'Account Details',  icon: <IdCard size={14} /> },
     ],
   },
 ];
@@ -263,6 +308,7 @@ function useBreakpoint() {
 export default function AdminDashboard() {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const { isMobile, isTablet, isCollapsed } = useBreakpoint();
 
   const [mobileOpen, setMobileOpen]     = useState(false);
@@ -438,7 +484,7 @@ export default function AdminDashboard() {
                       const subOpen   = !!openSubMenus[item.path];
                       const subActive = item.subItems?.some((s) => s.path === location.pathname) ?? false;
 
-                      // ── Item WITH sub-dropdown (e.g. Other Master) ──
+                      // ── Item WITH sub-dropdown (e.g. Employee Master, Other Master, Fabric Purchase) ──
                       if (hasSubItems) {
                         return (
                           <div key={item.path}>
@@ -721,9 +767,11 @@ export default function AdminDashboard() {
                     <span style={S.statusText}>Active</span>
                   </div>
                   <div style={S.dropDivider} />
-                  <DropItem icon={<User size={14} />}     label="My Profile" />
-                  <DropItem icon={<Settings size={14} />} label="Account Settings" />
-                 
+                  <DropItem icon={<User size={14} />}     label="My Profile" onClick={() => { setProfileOpen(false); navigate('/admin/profile'); }} />
+                  {/* ── Account Details ── */}
+                  <DropItem icon={<IdCard size={14} />}   label="Account Details" onClick={() => { setProfileOpen(false); navigate('/admin/account-details'); }} />
+                  <DropItem icon={<Settings size={14} />} label="Account Settings" onClick={() => { setProfileOpen(false); navigate('/admin/account-settings'); }} />
+
                   <div style={S.dropDivider} />
                   <button
                     style={{ ...S.dropItem, ...S.dropLogout }}
@@ -788,13 +836,22 @@ function DynamicBreadcrumb({ pathname, isMobile }: { pathname: string; isMobile:
 }
 
 /* ── DropItem ────────────────────────────────────────────── */
-function DropItem({ icon, label }: { icon: React.ReactNode; label: string }) {
+function DropItem({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick?: () => void;
+}) {
   const [hovered, setHovered] = useState(false);
   return (
     <button
       style={{ ...S.dropItem, background: hovered ? '#f8fafc' : 'transparent' }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
     >
       <span style={{ color:'#64748b' }}>{icon}</span>
       <span>{label}</span>

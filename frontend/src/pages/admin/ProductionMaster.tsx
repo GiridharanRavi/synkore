@@ -8,10 +8,15 @@
 // (splitting on '-') to avoid UTC→local timezone shift that caused dates to
 // display one day behind (e.g. 12/6/2026 showing as 11/6/2026 in IST).
 //
-// NEW: Export / Print menu in the page header (Export as CSV, Export as Excel,
+// Export / Print menu in the page header (Export as CSV, Export as Excel,
 // Print Table) — same dropdown pattern as the Yarn Purchase Order list page.
 // Pulls ALL records matching the current search/filter (limit=10000), not just
 // the visible page, so exports are complete even with small page sizes.
+//
+// NEW: "By Production" section now has a searchable Vendor dropdown, linked
+// to vendor_master via GET /api/production-plans/vendors/search?q=.
+// NEW: "By Purchase" section now has a searchable Supplier dropdown, linked
+// to supplier_master via GET /api/production-plans/suppliers/search?q=.
 
 import {
   useEffect,
@@ -25,6 +30,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Info,
   AlertTriangle, Trash2, PlusCircle, Check,
   Download, FileText, FileSpreadsheet, Printer,
+  Factory, Truck,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -59,8 +65,12 @@ interface ProductionPlan {
   inhouse_prod_qty: string;
   vendor_prod_qty: string;
   prod_special_instruction: string;
+  vendor_id: string;          // ← NEW: vendor_master.id (stored as string in form state)
+  vendor_name: string;        // ← NEW: display name, saved alongside vendor_id
   purchase_qty: string;
   purchase_special_instruction: string;
+  supplier_id: string;        // ← NEW: supplier_master.id (stored as string in form state)
+  supplier_name: string;      // ← NEW: display name, saved alongside supplier_id
   total_planned_qty?: number;
   balance_qty?: number;
   stock_total_qty?: number;
@@ -78,6 +88,14 @@ interface OrderOption {
   customer_name?: string;
   construction?: string;
   confirmed_by?: string;
+}
+
+// ── NEW: generic option shape for Vendor / Supplier dropdowns ────────────────
+interface NameOption {
+  id: string;
+  name: string;
+  code?: string;
+  location?: string;
 }
 
 // ─── Timezone-safe Date Formatter ─────────────────────────────────────────────
@@ -416,6 +434,170 @@ function OrderNoDropdown({ value, onChange, options, loading, orderType }: Order
   );
 }
 
+// ─── NEW: Generic Name Dropdown (used for Vendor + Supplier) ─────────────────
+// Same searchable/clearable UX as OrderNoDropdown, but for the simpler
+// { id, name, code?, location? } shape returned by vendors/suppliers search.
+
+interface NameDropdownProps {
+  value: string;              // selected id (as string) — '' = none selected
+  displayName: string;        // the name to show for the selected id (from form state)
+  onChange: (id: string, name: string) => void;
+  options: NameOption[];
+  loading: boolean;
+  placeholder: string;        // e.g. "Select Vendor"
+  searchPlaceholder: string;  // e.g. "Search vendor name or code…"
+  emptyLabel: string;         // e.g. "vendors"
+  icon: React.ReactNode;
+  accentColor: string;
+}
+
+function NameDropdown({
+  value, displayName, onChange, options, loading,
+  placeholder, searchPlaceholder, emptyLabel, icon, accentColor,
+}: NameDropdownProps) {
+  const [open, setOpen]     = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapRef             = useRef<HTMLDivElement>(null);
+  const searchRef           = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false); setSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  useEffect(() => { if (open && searchRef.current) searchRef.current.focus(); }, [open]);
+
+  const filtered = options.filter(o =>
+    o.name.toLowerCase().includes(search.toLowerCase()) ||
+    (o.code || '').toLowerCase().includes(search.toLowerCase()) ||
+    (o.location || '').toLowerCase().includes(search.toLowerCase())
+  );
+
+  const selected = options.find(o => o.id === value);
+  const shownName = selected?.name || displayName;
+
+  const handleSelect = (opt: NameOption) => { onChange(opt.id, opt.name); setOpen(false); setSearch(''); };
+  const handleClear  = (e: React.MouseEvent) => {
+    e.stopPropagation(); onChange('', ''); setOpen(false); setSearch('');
+  };
+
+  return (
+    <div className="ond-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`ond-trigger${open ? ' open' : ''}${value ? ' has-value' : ''}`}
+        onClick={() => !loading && setOpen(o => !o)}
+        disabled={loading}
+      >
+        <span className="ond-trigger-content">
+          {loading ? (
+            <span className="ond-loading">
+              <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', marginRight: 6 }} />
+              Loading {emptyLabel}…
+            </span>
+          ) : value && shownName ? (
+            <span className="ond-selected-val">
+              <span className="ond-order-badge" style={{ background: accentColor }}>{shownName}</span>
+              {selected?.code && <span className="ond-customer-name">{selected.code}</span>}
+            </span>
+          ) : (
+            <span className="ond-placeholder">— {placeholder} —</span>
+          )}
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          {value && !loading && (
+            <span onClick={handleClear} style={{ display: 'flex', alignItems: 'center', padding: '0 2px', cursor: 'pointer', color: '#94a3b8' }} title="Clear selection">
+              <X size={13} />
+            </span>
+          )}
+          <ChevronDown size={14} style={{ color: '#64748b', transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+        </span>
+      </button>
+
+      {open && (
+        <div className="ond-panel">
+          <div className="ond-search-wrap">
+            <Search size={13} style={{ color: '#94a3b8', flexShrink: 0 }} />
+            <input
+              ref={searchRef} className="ond-search"
+              placeholder={searchPlaceholder}
+              value={search} onChange={e => setSearch(e.target.value)}
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch('')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 0, display: 'flex', alignItems: 'center' }}>
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          <div className="ond-count">
+            {filtered.length === 0
+              ? <span style={{ color: '#c2410c' }}>No {emptyLabel} match "{search}"</span>
+              : <span>{filtered.length} {emptyLabel}{search ? ' found' : ' available'}</span>}
+          </div>
+
+          <div className="ond-list">
+            {value && (
+              <div className="ond-option ond-clear-opt" onClick={handleClear}>— Clear selection —</div>
+            )}
+            {filtered.length === 0 ? (
+              <div className="ond-empty">
+                <Search size={28} color="#cbd5e1" />
+                <span>No {emptyLabel} found</span>
+                {options.length === 0 && !loading && (
+                  <span style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>No {emptyLabel} loaded from server</span>
+                )}
+              </div>
+            ) : (
+              filtered.map(o => (
+                <div key={o.id} className={`ond-option${o.id === value ? ' selected' : ''}`} onClick={() => handleSelect(o)}>
+                  <div className="ond-opt-left" style={{ minWidth: 60 }}>
+                    {icon}
+                  </div>
+                  <div className="ond-opt-right">
+                    <span className="ond-opt-customer">{o.name}</span>
+                    <span className="ond-opt-meta">
+                      {o.code && <span>Code: {o.code}</span>}
+                      {o.location && <span>{o.location}</span>}
+                    </span>
+                  </div>
+                  {o.id === value && <Check size={14} style={{ color: accentColor, flexShrink: 0, marginLeft: 4 }} />}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {!open && (
+        <div className="ond-status">
+          {loading ? (
+            <span style={{ color: '#94a3b8' }}>Loading {emptyLabel}…</span>
+          ) : value && shownName ? (
+            <span className="ond-status-ok" style={{ color: accentColor }}>
+              <Check size={11} style={{ marginRight: 2 }} />
+              {shownName} selected
+            </span>
+          ) : options.length > 0 ? (
+            <span style={{ color: '#94a3b8' }}>
+              <Check size={11} style={{ marginRight: 2 }} />
+              {options.length} {emptyLabel} loaded — click to select
+            </span>
+          ) : (
+            <span style={{ color: '#f59e0b' }}>No {emptyLabel} found from server</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BLANK: ProductionPlan = {
@@ -426,7 +608,9 @@ const BLANK: ProductionPlan = {
   constn_for_production: '', order_quantity: '',
   allocated_qty: '', stock_special_instruction: '',
   production_qty: '', inhouse_prod_qty: '', vendor_prod_qty: '', prod_special_instruction: '',
+  vendor_id: '', vendor_name: '',
   purchase_qty: '', purchase_special_instruction: '',
+  supplier_id: '', supplier_name: '',
   order_links: [],
 };
 
@@ -467,7 +651,11 @@ const sanitizePlan = (data: any): ProductionPlan => ({
   production_qty:               data.production_qty  != null ? String(data.production_qty)  : '',
   inhouse_prod_qty:             data.inhouse_prod_qty != null ? String(data.inhouse_prod_qty) : '',
   vendor_prod_qty:              data.vendor_prod_qty  != null ? String(data.vendor_prod_qty)  : '',
+  vendor_id:                    data.vendor_id   != null ? String(data.vendor_id)   : '',
+  vendor_name:                  data.vendor_name ?? '',
   purchase_qty:                 data.purchase_qty     != null ? String(data.purchase_qty)     : '',
+  supplier_id:                  data.supplier_id   != null ? String(data.supplier_id)   : '',
+  supplier_name:                data.supplier_name ?? '',
   stock_special_instruction:    data.stock_special_instruction    ?? '',
   prod_special_instruction:     data.prod_special_instruction     ?? '',
   purchase_special_instruction: data.purchase_special_instruction ?? '',
@@ -566,6 +754,17 @@ const parseOrderItems = (raw: any): Array<{ construction_po: string; meter: numb
     }));
 };
 
+// ── NEW: normalise vendor/supplier search API rows into NameOption[] ─────────
+const mapNameOptions = (raw: any[], nameKey: string, codeKey: string): NameOption[] =>
+  (raw || [])
+    .map((o: any) => ({
+      id:       String(o.id ?? ''),
+      name:     String(o[nameKey] ?? '').trim(),
+      code:     o[codeKey] ? String(o[codeKey]) : undefined,
+      location: o.location ? String(o.location) : undefined,
+    }))
+    .filter(o => o.id && o.name);
+
 // ─── Main Component ────────────────────────────────────────────────────────────
 
 export default function ProductionPlanningMaster() {
@@ -595,7 +794,13 @@ export default function ProductionPlanningMaster() {
   const [loadingOrderDetail, setLoadingOrderDetail] = useState(false);
   const [loadingConfirmedBy, setLoadingConfirmedBy] = useState(false);
 
-  // ── NEW: Export / Print menu state ─────────────────────────────────────────
+  // ── NEW: Vendor (By Production) + Supplier (By Purchase) dropdown state ───
+  const [vendorOptions, setVendorOptions]     = useState<NameOption[]>([]);
+  const [loadingVendors, setLoadingVendors]   = useState(false);
+  const [supplierOptions, setSupplierOptions] = useState<NameOption[]>([]);
+  const [loadingSuppliers, setLoadingSuppliers] = useState(false);
+
+  // ── Export / Print menu state ─────────────────────────────────────────────
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting]   = useState(false);
 
@@ -603,7 +808,7 @@ export default function ProductionPlanningMaster() {
 
   const { toasts, push: pushToast, remove: removeToast } = useToast();
   const coDDRef   = useRef<HTMLDivElement>(null);
-  const exportRef = useRef<HTMLDivElement>(null);   // NEW
+  const exportRef = useRef<HTMLDivElement>(null);
   const width     = useWidth();
   const isMobile  = width < 576;
 
@@ -639,7 +844,7 @@ export default function ProductionPlanningMaster() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ── NEW: close Export/Print menu on outside click ─────────────────────────
+  // ── close Export/Print menu on outside click ──────────────────────────────
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false);
@@ -706,6 +911,34 @@ export default function ProductionPlanningMaster() {
       pushToast('error', 'Load Failed', 'Could not fetch order list.');
     }
     setLoadingOrderOpts(false);
+  };
+
+  // ── NEW: Fetch vendor options for "By Production" dropdown ───────────────
+  const fetchVendorOptions = async () => {
+    setLoadingVendors(true);
+    try {
+      const res = await authFetch(`${API}/vendors/search?q=`);
+      if (!res) { setLoadingVendors(false); return; }
+      const data = await res.json();
+      setVendorOptions(mapNameOptions(data ?? [], 'vendor_name', 'vendor_code'));
+    } catch {
+      pushToast('error', 'Load Failed', 'Could not fetch vendor list.');
+    }
+    setLoadingVendors(false);
+  };
+
+  // ── NEW: Fetch supplier options for "By Purchase" dropdown ───────────────
+  const fetchSupplierOptions = async () => {
+    setLoadingSuppliers(true);
+    try {
+      const res = await authFetch(`${API}/suppliers/search?q=`);
+      if (!res) { setLoadingSuppliers(false); return; }
+      const data = await res.json();
+      setSupplierOptions(mapNameOptions(data ?? [], 'supplier_name', 'supplier_code'));
+    } catch {
+      pushToast('error', 'Load Failed', 'Could not fetch supplier list.');
+    }
+    setLoadingSuppliers(false);
   };
 
   // ── fetchOrderDetail ───────────────────────────────────────────────────────
@@ -829,11 +1062,23 @@ export default function ProductionPlanningMaster() {
     });
   };
 
+  // ── NEW: select vendor for "By Production" ────────────────────────────────
+  const selectVendor = (id: string, name: string) => {
+    setForm(prev => ({ ...prev, vendor_id: id, vendor_name: name }));
+  };
+
+  // ── NEW: select supplier for "By Purchase" ────────────────────────────────
+  const selectSupplier = (id: string, name: string) => {
+    setForm(prev => ({ ...prev, supplier_id: id, supplier_name: name }));
+  };
+
   // ── Open form ──────────────────────────────────────────────────────────────
   const openCreate = () => {
     setForm(BLANK); setEditId(null); setError('');
     setDeletedLinkIds([]);
     fetchOrderOptions('Customer Order');
+    fetchVendorOptions();     // ← NEW
+    fetchSupplierOptions();  // ← NEW
     setShowForm(true);
   };
 
@@ -845,6 +1090,8 @@ export default function ProductionPlanningMaster() {
       setForm(sanitizePlan(data));
       setEditId(id); setError(''); setDeletedLinkIds([]);
       fetchOrderOptions(data.order_type ?? 'Customer Order');
+      fetchVendorOptions();     // ← NEW
+      fetchSupplierOptions();  // ← NEW
       if (data.order_no) fetchConfirmedBy(data.order_no);
       setShowForm(true);
     } catch { pushToast('error', 'Load Failed', 'Could not load plan details.'); }
@@ -883,8 +1130,12 @@ export default function ProductionPlanningMaster() {
       inhouse_prod_qty:             form.inhouse_prod_qty,
       vendor_prod_qty:              form.vendor_prod_qty,
       prod_special_instruction:     form.prod_special_instruction,
+      vendor_id:                    form.vendor_id || null,        // ← NEW
+      vendor_name:                  form.vendor_name ?? '',        // ← NEW
       purchase_qty:                 form.purchase_qty,
       purchase_special_instruction: form.purchase_special_instruction,
+      supplier_id:                  form.supplier_id || null,      // ← NEW
+      supplier_name:                form.supplier_name ?? '',      // ← NEW
       order_links:                  JSON.stringify(form.order_links),
       deleted_link_ids:             JSON.stringify(deletedLinkIds),
     };
@@ -917,7 +1168,7 @@ export default function ProductionPlanningMaster() {
     } catch { pushToast('error', 'Delete Failed', 'Could not delete plan.'); }
   };
 
-  // ── NEW: Export / Print helpers ────────────────────────────────────────────
+  // ── Export / Print helpers ─────────────────────────────────────────────────
   // Pulls ALL records matching the current search/filter (not just the visible
   // page) so exports stay complete regardless of the page-size setting.
   const fetchAllPlansForExport = async (): Promise<any[]> => {
@@ -949,6 +1200,8 @@ export default function ProductionPlanningMaster() {
       'Confirmed By':   p.confirmed_by ?? '',
       'Construction':   p.constn_for_production ?? '',
       'Order Qty':      p.order_quantity ?? '',
+      'Vendor':         p.vendor_name ?? '',       // ← NEW
+      'Supplier':       p.supplier_name ?? '',     // ← NEW
       'Total Planned':  tpl || '',
       'Balance':        bal,
     };
@@ -1188,7 +1441,7 @@ export default function ProductionPlanningMaster() {
         .pp-fetch-banner { grid-column:1/-1; display:flex; align-items:center; gap:7px; font-size:12px; color:#0f766e; background:#f0fdf4; border:1px solid #99f6e4; border-radius:8px; padding:6px 12px; margin-top:-4px; }
         .pp-confirmed-wrap { position:relative; }
 
-        /* Order No Dropdown */
+        /* Order No Dropdown (also used by Vendor / Supplier NameDropdown) */
         .ond-wrap { position:relative; }
         .ond-trigger { width:100%; display:flex; align-items:center; justify-content:space-between; padding:0 10px 0 12px; height:40px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#1e293b; font-size:13px; font-family:'DM Sans',sans-serif; cursor:pointer; outline:none; text-align:left; transition:border-color 0.15s, box-shadow 0.15s; }
         .ond-trigger:hover:not(:disabled) { border-color:#0f766e; }
@@ -1260,7 +1513,7 @@ export default function ProductionPlanningMaster() {
           </div>
 
           <div className="pp-header-actions">
-            {/* ── NEW: Export / Print dropdown ── */}
+            {/* Export / Print dropdown */}
             <div className="pp-export-wrap" ref={exportRef}>
               <button
                 type="button"
@@ -1611,6 +1864,23 @@ export default function ProductionPlanningMaster() {
                           <Field label="Vendor Prod. Qty">
                             <input type="number" min="0" step="0.001" value={form.vendor_prod_qty} onChange={e => set('vendor_prod_qty', e.target.value)} style={s.input} placeholder="0.000" />
                           </Field>
+
+                          {/* ── NEW: Vendor Name dropdown, linked to vendor_master ── */}
+                          <Field label="Vendor Name" hint="Linked to Vendor Master">
+                            <NameDropdown
+                              value={form.vendor_id}
+                              displayName={form.vendor_name}
+                              onChange={selectVendor}
+                              options={vendorOptions}
+                              loading={loadingVendors}
+                              placeholder="Select Vendor"
+                              searchPlaceholder="Search vendor name or code…"
+                              emptyLabel="vendors"
+                              icon={<Factory size={16} style={{ color: '#7c3aed' }} />}
+                              accentColor="#7c3aed"
+                            />
+                          </Field>
+
                           <div className="pp-col-full">
                             <Field label="Special Instruction">
                               <textarea value={form.prod_special_instruction} onChange={e => set('prod_special_instruction', e.target.value)} style={{ ...s.input, height:64, resize:'vertical' }} placeholder="Notes for production planning…" />
@@ -1630,6 +1900,23 @@ export default function ProductionPlanningMaster() {
                           <Field label="Purchase Quantity">
                             <input type="number" min="0" step="0.001" value={form.purchase_qty} onChange={e => set('purchase_qty', e.target.value)} style={s.input} placeholder="0.000" />
                           </Field>
+
+                          {/* ── NEW: Supplier Name dropdown, linked to supplier_master ── */}
+                          <Field label="Supplier Name" hint="Linked to Supplier Master">
+                            <NameDropdown
+                              value={form.supplier_id}
+                              displayName={form.supplier_name}
+                              onChange={selectSupplier}
+                              options={supplierOptions}
+                              loading={loadingSuppliers}
+                              placeholder="Select Supplier"
+                              searchPlaceholder="Search supplier name or code…"
+                              emptyLabel="suppliers"
+                              icon={<Truck size={16} style={{ color: '#0369a1' }} />}
+                              accentColor="#0369a1"
+                            />
+                          </Field>
+
                           <div className="pp-col-full">
                             <Field label="Special Instruction">
                               <textarea value={form.purchase_special_instruction} onChange={e => set('purchase_special_instruction', e.target.value)} style={{ ...s.input, height:64, resize:'vertical' }} placeholder="Notes for purchase planning…" />

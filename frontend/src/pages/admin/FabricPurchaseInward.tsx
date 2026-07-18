@@ -110,6 +110,43 @@ function FTypeBadge({ type }: { type: string }) {
   );
 }
 
+// ─── Inward Status (Order Meter vs Inward Meter) ────────────────────────────
+// pending    → no meters inward yet
+// partial    → some, but less than the FPO's ordered quantity
+// completed  → inward meter matches the FPO's ordered quantity (within tolerance)
+// over       → inward meter exceeds the FPO's ordered quantity
+// no_fpo     → this FPI isn't linked to any FPO, so there's nothing to compare against
+
+type InwardStatus = "pending" | "partial" | "completed" | "over" | "no_fpo";
+
+function getInwardStatus(fpoTotal: number, inwardTotal: number): InwardStatus {
+  if (fpoTotal <= 0) return "no_fpo";
+  if (inwardTotal <= 0) return "pending";
+  const ratio = inwardTotal / fpoTotal;
+  if (ratio > 1.001) return "over";
+  if (ratio >= 0.999) return "completed";
+  return "partial";
+}
+
+const STATUS_CFG: Record<InwardStatus, { label: string; bg: string; color: string }> = {
+  pending:   { label: "Pending",     bg: "#fef3c7", color: "#92400e" },
+  partial:   { label: "Partial",     bg: "#dbeafe", color: "#1d4ed8" },
+  completed: { label: "Completed",   bg: "#dcfce7", color: "#166534" },
+  over:      { label: "Over Inward", bg: "#fee2e2", color: "#b91c1c" },
+  no_fpo:    { label: "No FPO",      bg: "#f1f5f9", color: "#64748b" },
+};
+
+function StatusBadge({ status }: { status: InwardStatus }) {
+  const c = STATUS_CFG[status];
+  return (
+    <span style={{
+      display: "inline-block", fontSize: 10.5, fontWeight: 700, padding: "3px 10px",
+      borderRadius: 20, background: c.bg, color: c.color,
+      letterSpacing: "0.02em", whiteSpace: "nowrap",
+    }}>{c.label}</span>
+  );
+}
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 const fmt = (n: number) =>
@@ -540,7 +577,8 @@ export default function FabricPurchaseInward() {
   const [page,    setPage]    = useState(1);
   const [search,  setSearch]  = useState("");
   const [loading, setLoading] = useState(false);
-  const LIMIT = 10;
+  const [limit,   setLimit]   = useState(10);
+  const ENTRY_OPTIONS = [10, 25, 50, 100];
 
   // FPO options
   const [fpoOptions,  setFpoOptions]  = useState<FpoOption[]>([]);
@@ -610,15 +648,29 @@ export default function FabricPurchaseInward() {
             ((f as FpiPayload).purchase_invoice_no ?? "").toLowerCase().includes(search.toLowerCase())
           )
         : all;
-      const start = (page - 1) * LIMIT;
-      setFpis(filtered.slice(start, start + LIMIT));
+      const start = (page - 1) * limit;
+      setFpis(filtered.slice(start, start + limit));
       setTotal(filtered.length);
     } catch {}
     finally { setLoading(false); }
-  }, [page, search]);
+  }, [page, search, limit]);
 
   useEffect(() => { fetchFpis(); }, [fetchFpis]);
   useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => { setPage(1); }, [limit]);
+
+  // ── FPO Total Meter lookup — total ordered meter for a given FPO No ──────
+  // Used to compare "Order Meter" vs "Inward Meter" both in the table (per
+  // row status) and inside the create/edit form (live comparison box).
+  const getFpoTotalMeter = useCallback((fpoNo?: string | null): number => {
+    if (!fpoNo) return 0;
+    const fpo = fpoOptions.find(f => f.fpo_no === fpoNo);
+    if (!fpo) return 0;
+    if (fpo.items && fpo.items.length) {
+      return +fpo.items.reduce((s, it) => s + (Number(it.meter) || 0), 0).toFixed(2);
+    }
+    return +(Number(fpo.purchase_qty) || 0).toFixed(2);
+  }, [fpoOptions]);
 
   // ── ✅ FIX: FPO autofill — reads fpo_items, null-safe everything ──────────
   const handleFpoSelect = async (
@@ -863,7 +915,7 @@ export default function FabricPurchaseInward() {
   };
 
   // Pagination
-  const totalPages = Math.max(1, Math.ceil(total / LIMIT));
+  const totalPages = Math.max(1, Math.ceil(total / limit));
   const pageNums = (() => {
     const pages: number[] = [];
     let start = Math.max(1, page - 2);
@@ -1049,7 +1101,7 @@ export default function FabricPurchaseInward() {
                       Meter {f.fpo_no && <FTypeBadge type="autofill" />}
                     </th>
                     <th className="fpi-ith" style={{ minWidth: 220 }}>Piece No</th>
-                    <th className="fpi-ith" style={{ minWidth: 180 }}>New Piece No</th>
+                    <th className="fpi-ith" style={{ minWidth: 180 }}>Roll No</th>
                     <th className="fpi-ith fpi-ith--c" style={{ width: 34 }}></th>
                   </tr>
                 </thead>
@@ -1087,6 +1139,43 @@ export default function FabricPurchaseInward() {
             </div>
 
             <div className="fpi-total-section">
+              {f.fpo_no && (() => {
+                const fpoTotal = getFpoTotalMeter(f.fpo_no);
+                const balance  = +(fpoTotal - totalMeters).toFixed(2);
+                const status   = getInwardStatus(fpoTotal, totalMeters);
+                const pct      = fpoTotal > 0 ? Math.min(100, +(totalMeters / fpoTotal * 100).toFixed(1)) : 0;
+                return (
+                  <div className="fpi-compare-row">
+                    <div className="fpi-compare-item">
+                      <span className="fpi-compare-label">Order Meter</span>
+                      <span className="fpi-compare-val">{fmt(fpoTotal)} M</span>
+                    </div>
+                    <div className="fpi-compare-item">
+                      <span className="fpi-compare-label">Inward Meter</span>
+                      <span className="fpi-compare-val" style={{ color: "#0f766e" }}>{fmt(totalMeters)} M</span>
+                    </div>
+                    <div className="fpi-compare-item">
+                      <span className="fpi-compare-label">Balance</span>
+                      <span className="fpi-compare-val" style={{ color: balance < 0 ? "#dc2626" : balance === 0 ? "#166534" : "#1e293b" }}>
+                        {fmt(Math.abs(balance))} M{balance < 0 ? " over" : ""}
+                      </span>
+                    </div>
+                    <div className="fpi-compare-item">
+                      <span className="fpi-compare-label">Status</span>
+                      <StatusBadge status={status} />
+                    </div>
+                    <div className="fpi-compare-bar-wrap">
+                      <div className="fpi-compare-bar-track">
+                        <div className="fpi-compare-bar-fill" style={{
+                          width: `${pct}%`,
+                          background: status === "over" ? "#dc2626" : status === "completed" ? "#16a34a" : "#0f766e",
+                        }} />
+                      </div>
+                      <span className="fpi-compare-bar-pct">{pct}%</span>
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="fpi-total-row">
                 <span className="fpi-total-label">Total Meters</span>
                 <span className="fpi-total-val">{fmt(totalMeters)} M</span>
@@ -1134,8 +1223,12 @@ export default function FabricPurchaseInward() {
         .fpi-export-item:hover { background:#f8fafc; }
 
         /* Toolbar */
-        .fpi-toolbar { padding:14px 24px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+        .fpi-toolbar { padding:14px 24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
         @media(min-width:576px){ .fpi-toolbar { padding:16px 28px; } }
+        .fpi-entries-wrap { display:flex; align-items:center; gap:6px; font-size:13px; color:#64748b; flex-wrap:wrap; white-space:nowrap; }
+        .fpi-entries-select { padding:6px 26px 6px 10px; border:1px solid #cbd5e1; border-radius:8px; font-size:13px; font-family:'DM Sans',sans-serif; background:#fff; color:#1e293b; outline:none; cursor:pointer; appearance:none; -webkit-appearance:none; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='3'><polyline points='6 9 12 15 18 9'/></svg>"); background-repeat:no-repeat; background-position:right 8px center; }
+        .fpi-entries-select:focus { border-color:#0f766e; }
+        .fpi-entries-recs { color:#64748b; font-weight:500; }
         .fpi-search-wrap { position:relative; flex:1; min-width:180px; max-width:320px; }
         .fpi-search-wrap svg { position:absolute; left:10px; top:50%; transform:translateY(-50%); color:#94a3b8; }
         .fpi-search { width:100%; padding:8px 12px 8px 34px; border:1px solid #cbd5e1; border-radius:8px; font-size:13px; font-family:'DM Sans',sans-serif; background:#fff; color:#1e293b; outline:none; }
@@ -1256,6 +1349,17 @@ export default function FabricPurchaseInward() {
         .fpi-total-label   { font-size:15px; font-weight:700; color:#1e293b; }
         .fpi-total-val     { font-size:20px; font-weight:800; color:#0f766e; font-family:'DM Sans',sans-serif; }
 
+        /* Order Meter vs Inward Meter comparison */
+        .fpi-compare-row      { display:grid; grid-template-columns:repeat(2,1fr); gap:10px 16px; margin-bottom:14px; }
+        @media(min-width:600px){ .fpi-compare-row { grid-template-columns:repeat(4,1fr); } }
+        .fpi-compare-item     { display:flex; flex-direction:column; gap:2px; }
+        .fpi-compare-label    { font-size:10px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.05em; }
+        .fpi-compare-val      { font-size:15px; font-weight:800; color:#1e293b; font-family:'DM Mono',monospace; }
+        .fpi-compare-bar-wrap { grid-column:1/-1; display:flex; align-items:center; gap:10px; margin-top:2px; }
+        .fpi-compare-bar-track{ flex:1; height:8px; border-radius:6px; background:#e2e8f0; overflow:hidden; }
+        .fpi-compare-bar-fill { height:100%; border-radius:6px; transition:width .25s ease; }
+        .fpi-compare-bar-pct  { font-size:11px; font-weight:700; color:#64748b; min-width:38px; text-align:right; }
+
         /* Footer buttons */
         .fpi-cancel-btn  { padding:9px 16px; border:1px solid #cbd5e1; background:#fff; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; color:#475569; font-family:'DM Sans',sans-serif; }
         .fpi-cancel-btn:hover { background:#f1f5f9; }
@@ -1325,13 +1429,24 @@ export default function FabricPurchaseInward() {
 
         {/* Toolbar */}
         <div className="fpi-toolbar">
+          <div className="fpi-entries-wrap">
+            <span>Show</span>
+            <select
+              className="fpi-entries-select"
+              value={limit}
+              onChange={e => setLimit(Number(e.target.value))}
+            >
+              {ENTRY_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <span>entries</span>
+            <span className="fpi-entries-recs">{total} record(s)</span>
+          </div>
           <div className="fpi-search-wrap">
             <Search size={14} />
             <input className="fpi-search" type="text"
               placeholder="Search FPI no, supplier, FPO no…"
               value={search} onChange={e => setSearch(e.target.value)} />
           </div>
-          <span className="fpi-rec-count">{total} record(s)</span>
         </div>
 
         {/* Table */}
@@ -1350,45 +1465,59 @@ export default function FabricPurchaseInward() {
                   <th>DC Date</th>
                   <th>Lot No</th>
                   <th>Purchase Invoice No</th>
-                  <th className="th-r">Total Meters</th>
+                  <th className="th-r">Order Meter</th>
+                  <th className="th-r">Inward Meter</th>
+                  <th className="th-r">Balance</th>
+                  <th className="th-c">Status</th>
                   <th className="th-c">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={12} className="fpi-empty">
+                  <tr><td colSpan={15} className="fpi-empty">
                     <Loader2 size={22} style={{ animation: "spin 1s linear infinite", display: "inline-block" }} />
                   </td></tr>
                 ) : fpis.length === 0 ? (
-                  <tr><td colSpan={12} className="fpi-empty">
+                  <tr><td colSpan={15} className="fpi-empty">
                     {search ? "No FPIs match your search." : 'No FPIs found. Click "New FPI" to create one.'}
                   </td></tr>
-                ) : fpis.map((o, i) => (
-                  <tr key={o.id}>
-                    <td style={{ color: "#94a3b8" }}>{(page - 1) * LIMIT + i + 1}</td>
-                    <td><span className="fpi-fpi-no">{o.fpi_no}</span></td>
-                    <td style={{ color: "#64748b" }}>{fmtDate(o.fpi_date)}</td>
-                    <td><span className="fpi-fpo-no">{o.fpo_no || "—"}</span></td>
-                    <td>{o.supplier}</td>
-                    <td>{o.inward_to || "—"}</td>
-                    <td>{o.dc_no || "—"}</td>
-                    <td style={{ color: "#64748b" }}>{fmtDate(o.dc_date)}</td>
-                    <td>{o.lot_no || "—"}</td>
-                    <td style={{ fontFamily: "'DM Mono',monospace", fontSize: 12 }}>
-                      {(o as FpiPayload).purchase_invoice_no || "—"}
-                    </td>
-                    <td className="fpi-td-num">{fmt(Number(o.total_meters) || 0)} M</td>
-                    <td className="fpi-td-c">
-                      <div className="fpi-action-group">
-                        <button className="fpi-edit-btn"  onClick={() => handleOpenEdit(o)}>✏️ Edit</button>
-                        <button className="fpi-print-btn" onClick={() => doPrintTable([o])} title="Print">
-                          <Printer size={12} />
-                        </button>
-                        <button className="fpi-del-btn" onClick={() => { setDeleteTarget(o); setDeleteError(""); }}>🗑 Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                ) : fpis.map((o, i) => {
+                  const fpoTotal    = getFpoTotalMeter(o.fpo_no);
+                  const inwardTotal = Number(o.total_meters) || 0;
+                  const balance     = +(fpoTotal - inwardTotal).toFixed(2);
+                  const status      = getInwardStatus(fpoTotal, inwardTotal);
+                  return (
+                    <tr key={o.id}>
+                      <td style={{ color: "#94a3b8" }}>{(page - 1) * limit + i + 1}</td>
+                      <td><span className="fpi-fpi-no">{o.fpi_no}</span></td>
+                      <td style={{ color: "#64748b" }}>{fmtDate(o.fpi_date)}</td>
+                      <td><span className="fpi-fpo-no">{o.fpo_no || "—"}</span></td>
+                      <td>{o.supplier}</td>
+                      <td>{o.inward_to || "—"}</td>
+                      <td>{o.dc_no || "—"}</td>
+                      <td style={{ color: "#64748b" }}>{fmtDate(o.dc_date)}</td>
+                      <td>{o.lot_no || "—"}</td>
+                      <td style={{ fontFamily: "'DM Mono',monospace", fontSize: 12 }}>
+                        {(o as FpiPayload).purchase_invoice_no || "—"}
+                      </td>
+                      <td className="fpi-td-num">{o.fpo_no ? `${fmt(fpoTotal)} M` : "—"}</td>
+                      <td className="fpi-td-num">{fmt(inwardTotal)} M</td>
+                      <td className="fpi-td-num" style={{ color: balance < 0 ? "#dc2626" : balance === 0 ? "#166534" : "#374151" }}>
+                        {o.fpo_no ? `${fmt(Math.abs(balance))} M${balance < 0 ? " over" : ""}` : "—"}
+                      </td>
+                      <td className="fpi-td-c"><StatusBadge status={status} /></td>
+                      <td className="fpi-td-c">
+                        <div className="fpi-action-group">
+                          <button className="fpi-edit-btn"  onClick={() => handleOpenEdit(o)}>✏️ Edit</button>
+                          <button className="fpi-print-btn" onClick={() => doPrintTable([o])} title="Print">
+                            <Printer size={12} />
+                          </button>
+                          <button className="fpi-del-btn" onClick={() => { setDeleteTarget(o); setDeleteError(""); }}>🗑 Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
