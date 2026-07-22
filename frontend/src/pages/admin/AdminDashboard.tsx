@@ -254,7 +254,7 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/admin/sales-invoice', label: 'Sales Invoices',       icon: <Receipt size={14} /> },
        { path: '/admin/purchase-invoice', label: 'Fabric Purchase Invoices',       icon: <Receipt size={14} /> },
-       { path: '/admin/yarn-invoice', label: 'Yarn Purchase Invoices',       icon: <Receipt size={14} /> },
+       { path: '/admin/yarn-purchase-invoice', label: 'Yarn Purchase Invoices',       icon: <Receipt size={14} /> },
       // { path: '/admin/finance/payments', label: 'Payments',       icon: <CreditCard size={14} /> },
       // { path: '/admin/finance/ledger',   label: 'General Ledger', icon: <BookOpen size={14} /> },
     ],
@@ -265,9 +265,9 @@ const navGroups: NavGroup[] = [
     accentColor: 'rgba(168,85,247,0.12)',
     headerIcon: <BarChart2 size={16} />,
     items: [
-      { path: '/admin/reports/sales',      label: 'Sales Report',      icon: <TrendingUp size={14} /> },
-      { path: '/admin/reports/production', label: 'Purchase Report', icon: <PieChart size={14} /> },
-      { path: '/admin/reports/dispatch',   label: 'Dispatch Summary',  icon: <FileText size={14} /> },
+      { path: '/admin/sales-report',      label: 'Sales Report',      icon: <TrendingUp size={14} /> },
+      { path: '/admin/purchase-report', label: 'Purchase Report', icon: <PieChart size={14} /> },
+      { path: '/admin/dispatch',   label: 'Dispatch Summary',  icon: <FileText size={14} /> },
       { path: '/admin/reports/overview',   label: 'Business Overview', icon: <BarChart2 size={14} /> },
     ],
   },

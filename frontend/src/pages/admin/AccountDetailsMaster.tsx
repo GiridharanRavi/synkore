@@ -8,31 +8,18 @@
 // PREVIOUS REVISIONS: backend 500 fix, Payment Type + TDS Amount fields,
 // Export dropdown (CSV/Excel/Print), Payment History report view, Edit/
 // Delete actions on Payment History rows, Delivery ETA column, column
-// cleanup/reorder on the Invoices tables.
+// cleanup/reorder on the Invoices tables, Customer/Supplier filter + Party
+// Totals, running-balance Advance Credit display, Invoice Type (Fabric/
+// Yarn) filter dropdown + chip on Payment Out.
 //
 // NEW (THIS REVISION):
 //
-// 1) CUSTOMER / SUPPLIER FILTER + PARTY TOTALS
-//    A dropdown next to the search box lists every customer (Payment In
-//    tab) or supplier (Payment Out tab) with non-cancelled invoices.
-//    Picking one filters the Invoices table, the Payment History table,
-//    and scopes the 4 header cards to just that party. A dedicated
-//    "Party Summary" strip appears showing that party's total invoiced,
-//    total paid, and running balance.
-//
-// 2) OVER/UNDER-PAYMENT SHOWN AS A RUNNING BALANCE, NOT STUCK PER-INVOICE
-//    The Party Summary balance is (their total invoiced) − (their total
-//    paid), added up across ALL of their invoices — not just one. Pay
-//    less than the total and it shows as a normal "Balance Due" in red.
-//    Pay more than the total (across their invoices) and it flips to
-//    "Advance Credit" in purple — the extra amount that's logically
-//    available against their next order, instead of being invisible or
-//    showing as a confusing negative number on a single invoice row.
-//
-// 3) Deleted/cancelled invoices: the backend fix means these no longer
-//    show up in the Invoices table, Payment History, dropdown lists, or
-//    the summary cards — nothing to change here on the frontend, it just
-//    reflects what the (now-fixed) backend returns.
+// 5) FABRIC / YARN SPLIT ON THE SUMMARY CARDS — Payment Out tab only.
+//    The backend /summary endpoint now also returns
+//    payable_balance_fabric / payable_balance_yarn (and the underlying
+//    invoice + paid totals per type). Two extra SummaryCards ("Fabric
+//    Payable" and "Yarn Payable") render alongside the existing combined
+//    Payable Balance card whenever tab === 'out'.
 // ─────────────────────────────────────────────────────────────────────────
 
 import {
@@ -81,6 +68,9 @@ import {
   type PaymentStatus,
 } from '../../api/services';
 
+// ─── Invoice type (Fabric / Yarn) — Purchase Invoices only ────────────────
+export type InvoiceType = 'Fabric' | 'Yarn';
+
 // ─── Payment type ───────────────────────────────────────────────────────────
 export type PaymentType = 'Full Payment' | 'Part Payment' | 'Deposit' | 'Advance';
 const PAYMENT_TYPES: PaymentType[] = ['Full Payment', 'Part Payment', 'Deposit', 'Advance'];
@@ -104,6 +94,7 @@ type PurchaseInvoiceRowExt = PurchaseInvoiceRow & {
   cash_paid_amount?: number;
   tds_paid_amount?: number;
   last_payment_date?: string | null;
+  invoice_type?: InvoiceType;   // Fabric / Yarn
 };
 
 type PaymentEntryExt = PaymentEntry & {
@@ -124,6 +115,7 @@ interface PaymentHistoryRow {
   reference_no: string | null;
   notes: string | null;
   created_at: string;
+  invoice_type?: InvoiceType | null; // present on Payment Out history rows
 }
 
 interface PaymentHistoryListResponse {
@@ -133,7 +125,7 @@ interface PaymentHistoryListResponse {
   limit: number;
 }
 
-// ─── NEW: party (customer/supplier) summary row ────────────────────────────
+// ─── party (customer/supplier) summary row ─────────────────────────────────
 interface PartySummary {
   name: string;
   invoice_count: number;
@@ -142,7 +134,9 @@ interface PartySummary {
   balance: number; // negative = advance credit available
 }
 
-// ─── NEW: scoped account summary (matches backend /summary response) ──────
+// ─── scoped account summary (matches backend /summary response) ───────────
+// NEW: Fabric/Yarn split fields added — always present on the response but
+// only rendered when tab === 'out'.
 interface ScopedAccountSummary {
   sales_invoice_count: number;
   sales_invoice_total: number;
@@ -156,6 +150,15 @@ interface ScopedAccountSummary {
   payment_out_tds: number;
   receivable_balance: number;
   payable_balance: number;
+
+  // ── NEW: Fabric / Yarn split (Payment Out side only) ────────────────────
+  purchase_invoice_fabric_total: number;
+  purchase_invoice_yarn_total: number;
+  payment_out_fabric_total: number;
+  payment_out_yarn_total: number;
+  payable_balance_fabric: number;
+  payable_balance_yarn: number;
+
   scoped_customer: string | null;
   scoped_supplier: string | null;
 }
@@ -179,7 +182,7 @@ async function fetchSalesInvoicesScoped(params: { search: string; status: string
   );
 }
 
-async function fetchPurchaseInvoicesScoped(params: { search: string; status: string; supplier: string; page: number; limit: number }) {
+async function fetchPurchaseInvoicesScoped(params: { search: string; status: string; supplier: string; type: string; page: number; limit: number }) {
   return apiGet<{ data: PurchaseInvoiceRowExt[]; total: number; page: number; limit: number }>(
     '/api/account-details/purchase-invoices', params,
   );
@@ -189,7 +192,7 @@ async function fetchPaymentInHistory(params: { search: string; customer: string;
   return apiGet<PaymentHistoryListResponse>('/api/account-details/payments-in', params);
 }
 
-async function fetchPaymentOutHistory(params: { search: string; supplier: string; page: number; limit: number }): Promise<PaymentHistoryListResponse> {
+async function fetchPaymentOutHistory(params: { search: string; supplier: string; type: string; page: number; limit: number }): Promise<PaymentHistoryListResponse> {
   return apiGet<PaymentHistoryListResponse>('/api/account-details/payments-out', params);
 }
 
@@ -350,6 +353,25 @@ function PaymentTypeChip({ type }: { type?: PaymentType }) {
   );
 }
 
+// ─── Invoice type chip (Fabric / Yarn) — Purchase Invoices only ───────────
+
+function TypeChip({ type }: { type?: InvoiceType | null }) {
+  if (!type) return null;
+  const cfg = type === 'Yarn'
+    ? { bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' }
+    : { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' };
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center',
+      padding: '1px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700,
+      background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`,
+      whiteSpace: 'nowrap',
+    }}>
+      {type}
+    </span>
+  );
+}
+
 // ─── Invoice ETA badge ──────────────────────────────────────────────────────
 
 type InvoiceEtaTone = 'finished-early' | 'finished-ontime' | 'finished-late' | 'left' | 'overdue';
@@ -425,7 +447,7 @@ function SummaryCard({ label, value, sub, color, icon }: {
   );
 }
 
-// ─── NEW: Party summary strip (customer/supplier totals + credit/due) ─────
+// ─── Party summary strip (customer/supplier totals + credit/due) ──────────
 function PartySummaryStrip({ kind, party, name }: { kind: Tab; party: PartySummary; name: string }) {
   const isCredit = party.balance < -0.001;
   const isDue = party.balance > 0.001;
@@ -650,7 +672,9 @@ function PaymentModal({ open, onClose, onSaved, kind, invoice, pushToast }: Paym
         } as any);
       } else {
         await recordPaymentOut({
-          purchase_invoice_id: invoice.id, amount: amtNum, tds_amount: tdsNum, payment_type: paymentType,
+          purchase_invoice_id: invoice.id,
+          invoice_type: (invoice as PurchaseInvoiceRowExt).invoice_type ?? 'Fabric',
+          amount: amtNum, tds_amount: tdsNum, payment_type: paymentType,
           payment_date: paymentDate, mode, reference_no: referenceNo, notes,
         } as any);
       }
@@ -678,7 +702,10 @@ function PaymentModal({ open, onClose, onSaved, kind, invoice, pushToast }: Paym
               {kind === 'in' ? <ArrowDownToLine size={16} style={{ verticalAlign: 'middle', marginRight: 6 }} /> : <ArrowUpFromLine size={16} style={{ verticalAlign: 'middle', marginRight: 6 }} />}
               Record {label}
             </h2>
-            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>{invoice.invoice_no} · {party}</span>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>
+              {invoice.invoice_no} · {party}
+              {kind === 'out' && (invoice as PurchaseInvoiceRowExt).invoice_type ? ` · ${(invoice as PurchaseInvoiceRowExt).invoice_type}` : ''}
+            </span>
           </div>
           <button onClick={onClose} style={S.closeBtn}><X size={20} color="#fff" /></button>
         </div>
@@ -869,7 +896,10 @@ function EditPaymentModal({ open, onClose, onSaved, kind, payment, pushToast }: 
               <Pencil size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />
               Edit {label}
             </h2>
-            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>{payment.invoice_no} · {payment.party_name ?? '—'}</span>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>
+              {payment.invoice_no} · {payment.party_name ?? '—'}
+              {kind === 'out' && payment.invoice_type ? ` · ${payment.invoice_type}` : ''}
+            </span>
           </div>
           <button onClick={onClose} style={S.closeBtn}><X size={20} color="#fff" /></button>
         </div>
@@ -955,6 +985,7 @@ const INVOICE_COLUMNS_IN: ExportColumn[] = [
 
 const INVOICE_COLUMNS_OUT: ExportColumn[] = [
   { key: 'invoice_no', label: 'Invoice No' },
+  { key: 'invoice_type', label: 'Type' },
   { key: 'invoice_date', label: 'Date' },
   { key: 'supplier_name', label: 'Supplier' },
   { key: 'invoice_amount', label: 'Invoice Value' },
@@ -968,9 +999,10 @@ const INVOICE_COLUMNS_OUT: ExportColumn[] = [
 function historyColumns(tab: Tab): ExportColumn[] {
   return [
     { key: 'invoice_no', label: tab === 'in' ? 'Invoice No' : 'Purchase Invoice No' },
+    ...(tab === 'out' ? [{ key: 'invoice_type', label: 'Type' }] : []),
     { key: 'party_name', label: tab === 'in' ? 'Customer' : 'Supplier' },
     { key: 'payment_date', label: 'Date' },
-    { key: 'payment_type', label: 'Type' },
+    { key: 'payment_type', label: 'Payment Type' },
     { key: 'amount', label: 'Amount' },
     { key: 'tds_amount', label: 'TDS' },
     { key: 'mode', label: 'Mode' },
@@ -993,9 +1025,12 @@ export default function AccountDetailsMaster() {
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
 
-  // NEW: customer/supplier dropdown filter
+  // customer/supplier dropdown filter
   const [partyOptions, setPartyOptions] = useState<PartySummary[]>([]);
   const [selectedParty, setSelectedParty] = useState('');
+
+  // invoice type dropdown filter (Fabric / Yarn) — Payment Out only
+  const [selectedType, setSelectedType] = useState<'' | InvoiceType>('');
 
   const [modalOpen, setModalOpen]     = useState(false);
   const [modalInvoice, setModalInvoice] = useState<SalesInvoiceRowExt | PurchaseInvoiceRowExt | null>(null);
@@ -1027,7 +1062,7 @@ export default function AccountDetailsMaster() {
     }
   };
 
-  // NEW: load the customer/supplier dropdown list whenever the tab changes
+  // load the customer/supplier dropdown list whenever the tab changes
   const loadPartyOptions = async () => {
     try {
       const list = tab === 'in' ? await fetchCustomerList() : await fetchSupplierList();
@@ -1043,29 +1078,27 @@ export default function AccountDetailsMaster() {
       if (viewMode === 'history') {
         const res = tab === 'in'
           ? await fetchPaymentInHistory({ search, customer: selectedParty, page, limit: pageSize })
-          : await fetchPaymentOutHistory({ search, supplier: selectedParty, page, limit: pageSize });
+          : await fetchPaymentOutHistory({ search, supplier: selectedParty, type: selectedType, page, limit: pageSize });
         setHistoryRows(res.data);
         setTotal(res.total);
       } else if (tab === 'in') {
         const res = await fetchSalesInvoicesScoped({ search, status: filterStatus, customer: selectedParty, page, limit: pageSize });
         setSalesRows(res.data); setTotal(res.total);
       } else {
-        const res = await fetchPurchaseInvoicesScoped({ search, status: filterStatus, supplier: selectedParty, page, limit: pageSize });
+        const res = await fetchPurchaseInvoicesScoped({ search, status: filterStatus, supplier: selectedParty, type: selectedType, page, limit: pageSize });
         setPurchaseRows(res.data); setTotal(res.total);
       }
     } catch (e: any) {
-      const what = viewMode === 'history'
-        ? `${tab === 'in' ? 'Payment In' : 'Payment Out'} History`
-        : `${tab === 'in' ? 'Sales' : 'Purchase'} Invoices`;
-      pushToast('error', `${what} Load Failed`, extractErrorMessage(e));
+      pushToast('error', 'Load Failed', extractErrorMessage(e));
     }
     setLoading(false);
   };
 
-  useEffect(() => { loadPartyOptions(); setSelectedParty(''); }, [tab]);
+  // Reset the party AND type filters whenever the tab changes, then reload the party dropdown for the new tab
+  useEffect(() => { loadPartyOptions(); setSelectedParty(''); setSelectedType(''); }, [tab]);
   useEffect(() => { loadSummary(); }, [tab, selectedParty]);
-  useEffect(() => { loadData(); }, [tab, viewMode, search, filterStatus, selectedParty, page, pageSize]);
-  useEffect(() => { setPage(1); }, [tab, viewMode, search, filterStatus, selectedParty]);
+  useEffect(() => { loadData(); }, [tab, viewMode, search, filterStatus, selectedParty, selectedType, page, pageSize]);
+  useEffect(() => { setPage(1); }, [tab, viewMode, search, filterStatus, selectedParty, selectedType]);
 
   const openPayment = (row: SalesInvoiceRowExt | PurchaseInvoiceRowExt) => {
     setModalInvoice(row);
@@ -1112,11 +1145,13 @@ export default function AccountDetailsMaster() {
     ? historyColumns(tab)
     : (tab === 'in' ? INVOICE_COLUMNS_IN : INVOICE_COLUMNS_OUT);
   const currentExportRows: Record<string, any>[] = viewMode === 'history' ? historyRows : invoiceRows;
-  const exportFilename = `${tab === 'in' ? 'payment-in' : 'payment-out'}-${viewMode === 'history' ? 'history' : 'invoices'}${selectedParty ? `-${selectedParty.replace(/\s+/g, '_')}` : ''}`;
+  const exportFilename = `${tab === 'in' ? 'payment-in' : 'payment-out'}-${viewMode === 'history' ? 'history' : 'invoices'}${selectedParty ? `-${selectedParty.replace(/\s+/g, '_')}` : ''}${selectedType ? `-${selectedType}` : ''}`;
 
-  const colCount = currentColumns.length + 2 + (viewMode === 'invoices' ? 1 : 0);
+  // Base table always has 12 visible columns (# + Action + 10 data columns);
+  // the Invoice Type column adds 1 more, only on the Payment Out tab.
+  const colCount = 12 + (tab === 'out' ? 1 : 0);
 
-  // NEW: the selected party's full summary object (for the strip below the toolbar)
+  // the selected party's full summary object (for the strip below the toolbar)
   const activePartySummary = selectedParty
     ? partyOptions.find(p => p.name === selectedParty) ?? null
     : null;
@@ -1189,6 +1224,26 @@ export default function AccountDetailsMaster() {
             <SummaryCard label="Payable Balance"    value={`₹${summary.payable_balance.toLocaleString('en-IN')}`}    sub={`${summary.purchase_invoice_count} purchase invoices`} color="#dc2626" icon={<ArrowUpFromLine size={18} />} />
             <SummaryCard label="Total Payment In"   value={`₹${summary.payment_in_total.toLocaleString('en-IN')}`}   color="#0369a1" icon={<Wallet size={18} />} />
             <SummaryCard label="Total Payment Out"  value={`₹${summary.payment_out_total.toLocaleString('en-IN')}`} color="#7c3aed" icon={<Receipt size={18} />} />
+
+            {/* NEW: Fabric / Yarn payable split — Payment Out tab only */}
+            {tab === 'out' && (
+              <>
+                <SummaryCard
+                  label="Fabric Payable"
+                  value={`₹${summary.payable_balance_fabric.toLocaleString('en-IN')}`}
+                  sub={`₹${summary.purchase_invoice_fabric_total.toLocaleString('en-IN')} invoiced`}
+                  color="#1d4ed8"
+                  icon={<ArrowUpFromLine size={18} />}
+                />
+                <SummaryCard
+                  label="Yarn Payable"
+                  value={`₹${summary.payable_balance_yarn.toLocaleString('en-IN')}`}
+                  sub={`₹${summary.purchase_invoice_yarn_total.toLocaleString('en-IN')} invoiced`}
+                  color="#c2410c"
+                  icon={<ArrowUpFromLine size={18} />}
+                />
+              </>
+            )}
           </div>
         )}
 
@@ -1233,7 +1288,7 @@ export default function AccountDetailsMaster() {
             />
           </div>
 
-          {/* NEW: customer / supplier dropdown filter */}
+          {/* customer / supplier dropdown filter */}
           <select
             className="ad-filter-sel"
             value={selectedParty}
@@ -1245,6 +1300,20 @@ export default function AccountDetailsMaster() {
               <option key={p.name} value={p.name}>{p.name} ({p.invoice_count})</option>
             ))}
           </select>
+
+          {/* invoice type dropdown filter (Fabric / Yarn) — Payment Out only */}
+          {tab === 'out' && (
+            <select
+              className="ad-filter-sel"
+              value={selectedType}
+              onChange={(e) => setSelectedType(e.target.value as '' | InvoiceType)}
+              title="Filter by invoice type"
+            >
+              <option value=''>All Types</option>
+              <option value='Fabric'>Fabric</option>
+              <option value='Yarn'>Yarn</option>
+            </select>
+          )}
 
           {viewMode === 'invoices' && (
             <select className="ad-filter-sel" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
@@ -1274,7 +1343,7 @@ export default function AccountDetailsMaster() {
           </div>
         </div>
 
-        {/* NEW: party summary strip (shown only when a customer/supplier is selected) */}
+        {/* party summary strip (shown only when a customer/supplier is selected) */}
         {activePartySummary && (
           <PartySummaryStrip kind={tab} party={activePartySummary} name={activePartySummary.name} />
         )}
@@ -1288,9 +1357,10 @@ export default function AccountDetailsMaster() {
                   <tr>
                     <th>#</th>
                     <th>{tab === 'in' ? 'Invoice No' : 'Purchase Invoice No'}</th>
+                    {tab === 'out' && <th>Invoice Type</th>}
                     <th>{tab === 'in' ? 'Customer' : 'Supplier'}</th>
                     <th>Date</th>
-                    <th>Type</th>
+                    <th>Payment Type</th>
                     <th className="th-r">Amount</th>
                     <th className="th-r">TDS</th>
                     <th className="th-r">Total</th>
@@ -1318,6 +1388,7 @@ export default function AccountDetailsMaster() {
                   <tr>
                     <th>#</th>
                     <th>Invoice No</th>
+                    <th>Type</th>
                     <th>Date</th>
                     <th>Supplier</th>
                     <th className="th-r">Invoice Value</th>
@@ -1337,12 +1408,13 @@ export default function AccountDetailsMaster() {
                 ) : viewMode === 'history' ? (
                   historyRows.length === 0 ? (
                     <tr><td colSpan={colCount} className="ad-empty">
-                      {search || selectedParty ? 'No payments match your filters.' : `No ${tab === 'in' ? 'Payment In' : 'Payment Out'} history yet.`}
+                      {search || selectedParty || selectedType ? 'No payments match your filters.' : `No ${tab === 'in' ? 'Payment In' : 'Payment Out'} history yet.`}
                     </td></tr>
                   ) : historyRows.map((h, i) => (
-                    <tr key={h.id}>
+  <tr key={tab === 'out' ? `${h.invoice_type}-${h.id}` : h.id}>
                       <td style={{ color: '#94a3b8' }}>{(page - 1) * pageSize + i + 1}</td>
                       <td style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: accent }}>{h.invoice_no}</td>
+                      {tab === 'out' && <td><TypeChip type={h.invoice_type} /></td>}
                       <td>{h.party_name ?? '—'}</td>
                       <td>{h.payment_date}</td>
                       <td><PaymentTypeChip type={h.payment_type} /></td>
@@ -1381,7 +1453,7 @@ export default function AccountDetailsMaster() {
                   ))
                 ) : invoiceRows.length === 0 ? (
                   <tr><td colSpan={colCount} className="ad-empty">
-                    {search || filterStatus || selectedParty ? 'No records match your filters.' : `No ${tab === 'in' ? 'sales invoices' : 'purchase invoices'} found.`}
+                    {search || filterStatus || selectedParty || selectedType ? 'No records match your filters.' : `No ${tab === 'in' ? 'sales invoices' : 'purchase invoices'} found.`}
                   </td></tr>
                 ) : tab === 'in' ? (
                   (invoiceRows as SalesInvoiceRowExt[]).map((r, i) => (
@@ -1426,9 +1498,10 @@ export default function AccountDetailsMaster() {
                   ))
                 ) : (
                   (invoiceRows as PurchaseInvoiceRowExt[]).map((r, i) => (
-                    <tr key={r.id}>
+  <tr key={`${r.invoice_type}-${r.id}`}>
                       <td style={{ color: '#94a3b8' }}>{(page - 1) * pageSize + i + 1}</td>
                       <td style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: accent }}>{r.invoice_no}</td>
+                      <td><TypeChip type={r.invoice_type} /></td>
                       <td>{r.invoice_date}</td>
                       <td>{r.supplier_name}</td>
                       <td className="td-r" style={{ fontFamily: "'DM Mono',monospace" }}>₹{Number(r.invoice_amount).toLocaleString('en-IN')}</td>

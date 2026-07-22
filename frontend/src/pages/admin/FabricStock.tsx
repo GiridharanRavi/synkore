@@ -21,11 +21,19 @@
 //   DELETE /api/fabric-stock/manual/:id (remove a manual entry)
 //
 // PURCHASE INVOICE NO COLUMN:
-//   The Piece Detail table now shows `purchase_invoice_no` — the same
-//   field that's already visible on the Fabric Purchase Inward list — so
-//   an inward piece can be traced back to its purchase invoice from the
+//   The Piece Detail table shows `purchase_invoice_no` — the same field
+//   that's already visible on the Fabric Purchase Inward list — so an
+//   inward piece can be traced back to its purchase invoice from the
 //   Fabric Stock screen without switching pages. It's optional on
 //   StockPiece (manual entries won't have one) and falls back to "—".
+//
+// NOTE: a previous revision carried temporary diagnostics (a raw-table
+// /debug endpoint, console logging of every load, and a "Force Remove"
+// client-only fallback for rows that 404'd on delete) added while
+// tracking down a stale-server-process issue where a duplicate backend
+// instance was serving old data. That's been resolved, so this revision
+// removes the scaffolding — a 404 on delete now just means the row was
+// already gone, and we quietly resync via loadAll().
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -529,9 +537,25 @@ export default function FabricStock() {
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
 
+  // Delete-in-flight guard — prevents a double-click from firing two
+  // DELETE requests for the same row.
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
   const width = useWidth();
 
+  // ── Stale-response guard for loadAll() ──
+  // Every call to loadAll() gets an incrementing sequence number. If two
+  // loadAll() calls are ever in flight at once (e.g. React StrictMode's
+  // double-invoked mount effect in dev, or a Refresh click landing while
+  // a delete's own resync request is still pending) the SLOWER one can
+  // resolve AFTER the faster one and overwrite state with older data —
+  // which looks exactly like "a deleted row came back". Only the response
+  // matching the most recent call is ever applied; anything older is
+  // silently discarded instead of clobbering newer state.
+  const loadSeqRef = React.useRef(0);
+
   const loadAll = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true); setError("");
     try {
       const [pRes, sRes, fRes] = await Promise.all([
@@ -539,16 +563,18 @@ export default function FabricStock() {
         getFabricStockSummary(),
         getFabricStockFilters(),
       ]);
+      if (seq !== loadSeqRef.current) return; // a newer loadAll() has since started/finished — ignore this stale result
       setPieces((pRes?.data ?? pRes) || []);
       setSummary((sRes?.data ?? sRes) || []);
       const filters = fRes?.data ?? fRes ?? {};
       setLocations(filters.locations || []);
       setSuppliers(filters.suppliers || []);
     } catch (err: any) {
+      if (seq !== loadSeqRef.current) return; // stale error from a superseded call — ignore
       console.error("❌ FabricStock load failed:", err);
       setError(err?.response?.data?.message || err?.message || "Failed to load stock data.");
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -668,13 +694,32 @@ export default function FabricStock() {
       setManualSaving(false);
     }
   };
+
+  // ── Delete a manual entry ──
+  // Guards against double-click firing two DELETE requests for the same
+  // row (via deletingId). A 404 from the API just means the row is
+  // already gone server-side — that's the goal state either way, so we
+  // treat it as a quiet resync rather than an alarming error.
   const handleDeleteManual = async (id: number) => {
+    if (deletingId === id) return;
     if (!window.confirm("Delete this manually added stock entry? This cannot be undone.")) return;
+
+    setDeletingId(id);
     try {
       await deleteManualFabricStock(id);
+      setPieces(prev => prev.filter(p => !(p.source === "manual" && p.id === id)));
       await loadAll();
     } catch (err: any) {
-      alert(err?.response?.data?.message || err?.message || "Failed to delete entry.");
+      const status = err?.response?.status ?? err?.status;
+      if (status === 404) {
+        setPieces(prev => prev.filter(p => !(p.source === "manual" && p.id === id)));
+        await loadAll();
+      } else {
+        console.error(`❌ Delete failed for manual id=${id}:`, err);
+        alert(err?.response?.data?.message || err?.message || "Failed to delete entry.");
+      }
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -871,7 +916,7 @@ export default function FabricStock() {
         .fst-td-c { text-align:center; }
         .fst-empty { text-align:center; padding:48px 16px; color:#94a3b8; font-size:13px; }
         .fst-error { display:flex; align-items:center; gap:8px; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:12px 16px; border-radius:10px; font-size:13px; margin-bottom:14px; }
-        .fst-row-actions { display:flex; align-items:center; justify-content:center; gap:6px; }
+        .fst-row-actions-buttons { display:flex; align-items:center; justify-content:center; gap:6px; }
         .fst-icon-btn { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:6px; border:1px solid #e2e8f0; background:#fff; cursor:pointer; }
         .fst-edit-btn { border-color:#bfdbfe; color:#1d4ed8; }
         .fst-edit-btn:hover { background:#eff6ff; }
@@ -1119,12 +1164,19 @@ export default function FabricStock() {
                       <td className="fst-td-num">{fmt(p.meter)} M</td>
                       <td className="fst-td-c">
                         {p.source === "manual" ? (
-                          <div className="fst-row-actions">
+                          <div className="fst-row-actions-buttons">
                             <button className="fst-icon-btn fst-edit-btn" title="Edit manual entry" onClick={() => openEditModal(p)}>
                               <Pencil size={13} />
                             </button>
-                            <button className="fst-icon-btn fst-del-btn" title="Delete manual entry" onClick={() => handleDeleteManual(p.id)}>
-                              <Trash2 size={13} />
+                            <button
+                              className="fst-icon-btn fst-del-btn"
+                              title="Delete manual entry"
+                              disabled={deletingId === p.id}
+                              onClick={() => handleDeleteManual(p.id)}
+                            >
+                              {deletingId === p.id
+                                ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+                                : <Trash2 size={13} />}
                             </button>
                           </div>
                         ) : (

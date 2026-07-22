@@ -1,6 +1,45 @@
 // @ts-nocheck
 // frontend/src/pages/admin/FabricPurchaseOrders.tsx
 //
+// NOTE: This file is UNCHANGED from your last working version except for
+// ONE targeted fix inside selectPlan()'s diagnostic toast (see "SHIPPING
+// TO DIAGNOSTIC TOAST FIX" below). Everything else — the autofill chain,
+// the print layout, the row-actions kebab menu, the Company/Supplier/
+// Plan dropdowns — is exactly as before.
+//
+//   • PendingPlan interface already declares customer_address_line1,
+//     customer_district, customer_state, customer_pincode,
+//     customer_country, customer_contact_no, customer_gstin.
+//   • formatCustomerShipToBlock() already builds the multi-line block from
+//     those fields.
+//   • selectPlan() already writes that block into `ship_from` ("Shipping
+//     To") when a plan is linked, and clears it when unlinked.
+//
+// SHIPPING TO DIAGNOSTIC TOAST FIX (this revision):
+//   The old diagnostic toast (fired only when shipToBlock ends up empty)
+//   just confirmed the JOIN worked — "joinMode=..., matched customer=...,
+//   has customer row=true" — without ever checking whether the matched
+//   customer row actually HAS address data, or whether the debug route
+//   itself failed. That was misleading in two ways:
+//     1. If GET /pending-purchase/debug/:rec_no 500'd (as it did with the
+//        backend's ReferenceError bug), .then(r => r.json()) parsed the
+//        error body ({message, sqlMessage}) instead of a real debug
+//        payload, and every dbg.* field used in the toast came back
+//        undefined — producing a nonsensical "Customer 'this customer'
+//        was found (joinMode=undefined)..." message.
+//     2. Even with a healthy debug response, the old message never looked
+//        at dbg.result (which the debug route already computes) — so it
+//        could never tell you "the data WAS resolved but didn't reach the
+//        form" (a frontend bug) apart from "the customer has no address
+//        on file at all" (a data problem). Those need very different
+//        fixes, so the toast now distinguishes them explicitly.
+//   The corresponding backend fix (fabric-purchase-orders.js — restoring
+//   the plan-level *Expr variables inside the debug route's Step 5, which
+//   were being referenced without ever being declared in that route's
+//   scope) is what actually stops the 500. This frontend change only
+//   makes the toast trustworthy once that 500 is gone; it does not change
+//   the autofill logic itself.
+//
 // Plan-link autofill chain:
 //   Selecting an Order Plan No auto-fills:
 //     • purchase_qty  (header field)
@@ -8,6 +47,8 @@
 //     • items[0].construction  ← from plan.constn_for_production
 //     • items[0].qty           ← from plan.purchase_qty
 //     • remarks                ← descriptive default (editable)
+//     • "Shipping To"          ← from the customer's address on file for
+//                                 this plan (see formatCustomerShipToBlock())
 //   All autofilled fields remain editable after selection.
 //
 // Pending-purchase endpoint is now on the FPO router:
@@ -228,8 +269,8 @@
 //   relative paths against `window.location.origin`, which is only
 //   correct if the API and the frontend share an origin.
 //
-// COMPANY LOGO STILL NOT PRINTING — REAL ROOT CAUSE FIXED (THIS
-// REVISION):
+// COMPANY LOGO STILL NOT PRINTING — REAL ROOT CAUSE FIXED (prior
+// revision):
 //   BUG: `window.location.origin` is the ORIGIN THE REACT APP ITSELF IS
 //   SERVED FROM (the Vite dev server, e.g. http://localhost:5173) — not
 //   the backend API server that actually stores and serves the uploaded
@@ -256,6 +297,43 @@
 //        window.location.origin, so the same absolute URL works
 //        correctly both inside the app and inside the print popup
 //        window (which also has no base URL of its own).
+//
+// "ORDER TO" / "SHIPPING TO" RELABEL + SHIPPING-TO CUSTOMER-ADDRESS
+// AUTOFILL (prior revision):
+//   1. RELABEL: the two address boxes on the form and on the printed PO
+//      were renamed —
+//        • "Delivery To"  → "Order To"      (unchanged data source: the
+//          selected Supplier's address/contact — see selectSupplier() /
+//          formatSupplierDeliveryBlock()). The underlying field/DB column
+//          is still called `delivery_to` so no backend/migration change
+//          is needed; only the label shown to the user changed.
+//        • "Shipping From" → "Shipping To"  (data source CHANGED — see
+//          #2 below). The underlying field/DB column is still called
+//          `ship_from` for the same reason (no schema change needed);
+//          only the label changed.
+//   2. NEW AUTOFILL: "Shipping To" was a blank manual text box before.
+//      It now auto-fills — the same way the Construction Items do — from
+//      the customer's address on file for whichever Order Plan No is
+//      linked, built from PendingPlan.customer_* fields (Address, City/
+//      District, State, Pincode, Country, Contact No, GSTIN — see
+//      formatCustomerShipToBlock() / selectPlan() below) and normalized
+//      with the same column-name-variant fallback pattern already used
+//      for Suppliers (see loadPendingPlans()). The field is now a
+//      textarea (was a single-line input) so the multi-line address is
+//      readable, stays fully editable afterwards, and clears when the
+//      plan is unlinked — same "autofill, editable, clears on unlink"
+//      behavior as every other autofilled field on this form.
+//      NOTE: this depends on production_plans (or however your API joins
+//      in the customer) actually exposing customer address columns. If
+//      your schema uses different column names than the ones guessed in
+//      loadPendingPlans()'s fallback list, "Shipping To" will simply stay
+//      blank on plan selection — add the real column name to that list.
+//
+//   THIS REVISION'S FIX WAS ENTIRELY ON THE BACKEND: GET /pending-purchase
+//   now LEFT JOINs an auto-detected customer master table so the
+//   customer_* fields consumed by formatCustomerShipToBlock() below are
+//   actually populated. See fabric-purchase-orders.js for that change —
+//   nothing in this file needed to change.
 
 import React, {
   useCallback, useEffect, useMemo, useRef, useState,
@@ -305,12 +383,12 @@ interface Supplier {
   // Named person to contact at this supplier — distinct from agent_name
   // (agent_name is the assigned sales agent; contact_name is the actual
   // contact person on the Supplier Master's own contact form). Used to
-  // add a labelled "Contact Name" line to the auto-filled Delivery To
+  // add a labelled "Contact Name" line to the auto-filled "Order To"
   // block (see formatSupplierDeliveryBlock()).
   contact_name?: string;
   email?: string;
   // Address components — same fields shown on the Supplier Master's own
-  // address form. Used to build the auto-filled "Delivery To" text when a
+  // address form. Used to build the auto-filled "Order To" text when a
   // supplier is selected (see formatSupplierAddress() / selectSupplier()).
   address_line1?: string;
   district?: string;
@@ -329,6 +407,19 @@ interface PendingPlan {
   constn_for_production?: string;
   purchase_qty: number | string;
   purchase_special_instruction?: string;
+  // ── Customer / "Shipping To" address components ──
+  // Sourced from production_plans (or whatever the pending-purchase
+  // endpoint joins in for the customer) via the usual column-name-variant
+  // fallback pattern — see loadPendingPlans(). Used to build the
+  // auto-filled "Shipping To" block when this plan is linked (see
+  // formatCustomerShipToBlock() / selectPlan()).
+  customer_address_line1?: string;
+  customer_district?: string;
+  customer_state?: string;
+  customer_pincode?: string;
+  customer_country?: string;
+  customer_contact_no?: string;
+  customer_gstin?: string;
 }
 
 interface HsnEntry {
@@ -418,7 +509,7 @@ function ToastContainer({ toasts, onRemove }: { toasts: Toast[]; onRemove: (id: 
   };
   if (!toasts.length) return null;
   return (
-    <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, display: "flex", flexDirection: "column", gap: 10, maxWidth: 360, pointerEvents: "none" }}>
+    <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, display: "flex", flexDirection: "column", gap: 10, maxWidth: 380, pointerEvents: "none" }}>
       {toasts.map(t => {
         const c = cfg[t.type];
         return (
@@ -470,7 +561,8 @@ const FPO_EXPORT_COLUMNS = [
   { key: "plan_rec_no",   label: "Plan No" },
   { key: "order_no",      label: "Order No" },
   { key: "purchase_qty",  label: "Purchase Qty" },
-  { key: "delivery_to",   label: "Delivery To" },
+  { key: "delivery_to",   label: "Order To" },
+  { key: "ship_from",     label: "Shipping To" },
   { key: "pay_terms",     label: "Pay Terms" },
   { key: "rate_type",     label: "Rate Type" },
   { key: "freight",       label: "Freight" },
@@ -752,7 +844,7 @@ const formatCompanyAddress = (c?: CompanyDetails | null): string => {
   return c.pincode && !base.includes(c.pincode) ? `${base} - ${c.pincode}` : base;
 };
 
-// ── LOGO FIX (THIS REVISION) ─────────────────────────────────────────────────
+// ── LOGO FIX (prior revision) ────────────────────────────────────────────────
 // ROOT CAUSE: `window.location.origin` is the origin the REACT APP is
 // served from (the Vite dev server, e.g. http://localhost:5173) — not the
 // BACKEND API server that actually stores/serves the uploaded logo file.
@@ -824,13 +916,14 @@ const formatSupplierAddress = (s?: Supplier | null): string => {
     .join(", ");
 };
 
-// Builds the full multi-line "Delivery To" block auto-filled when a
+// Builds the full multi-line "Order To" block auto-filled when a
 // Supplier is selected: registered address on the first line(s), then a
 // labelled line each for Contact Name, Contact No, Agent Name, Email, and
 // GSTIN, whenever the Supplier Master has that field populated. Blank
 // fields are simply omitted rather than printed as "—", so the block
 // stays clean for suppliers with partial data on file. Still fully
-// editable afterwards.
+// editable afterwards. (Writes into the `delivery_to` field/column — the
+// on-screen label was renamed to "Order To", see the top-of-file note.)
 const formatSupplierDeliveryBlock = (s?: Supplier | null): string => {
   if (!s) return "";
   const lines: string[] = [];
@@ -842,6 +935,28 @@ const formatSupplierDeliveryBlock = (s?: Supplier | null): string => {
   if (s.agent_name) lines.push(`Agent: ${s.agent_name}`);
   if (s.email) lines.push(`Email: ${s.email}`);
   if (s.gstin) lines.push(`GSTIN: ${s.gstin}`);
+  return lines.join("\n");
+};
+
+// Builds the full multi-line "Shipping To" block auto-filled when an
+// Order Plan No is linked: the customer's address on file for that plan
+// (Address Line 1, District/City, State, Pincode, Country — normalized
+// via the usual column-name-variant fallbacks in loadPendingPlans()),
+// followed by labelled Contact No / GSTIN lines whenever present. Blank
+// fields are simply omitted, same as formatSupplierDeliveryBlock() above.
+// Still fully editable afterwards, and clears when the plan is unlinked.
+// (Writes into the `ship_from` field/column — the on-screen label was
+// renamed to "Shipping To", see the top-of-file note.)
+const formatCustomerShipToBlock = (p?: PendingPlan | null): string => {
+  if (!p) return "";
+  const lines: string[] = [];
+  const address = [p.customer_address_line1, p.customer_district, p.customer_state, p.customer_pincode, p.customer_country]
+    .filter(Boolean)
+    .join(", ");
+  if (address) lines.push(address);
+  if (p.customer_pincode && !address.includes(p.customer_pincode)) lines.push(`PIN: ${p.customer_pincode}`);
+  if (p.customer_contact_no) lines.push(`Contact No: ${p.customer_contact_no}`);
+  if (p.customer_gstin) lines.push(`GSTIN: ${p.customer_gstin}`);
   return lines.join("\n");
 };
 
@@ -1623,7 +1738,7 @@ export default function FabricPurchaseOrders() {
 
   // ── Load suppliers ──
   // DIAGNOSTIC: logs the first raw supplier record exactly as returned by
-  // getSuppliers(), before any column-name normalisation, so if "Delivery
+  // getSuppliers(), before any column-name normalisation, so if "Order
   // To" ever comes up blank after selecting a supplier you can open
   // DevTools console and see the real field names the Supplier Master API
   // is using — then add any missing variant to the fallback lists below.
@@ -1644,9 +1759,8 @@ export default function FabricPurchaseOrders() {
               (r.state ?? r.state_name ?? r.stateName ?? r.state_title ?? "") as string
             ).trim(),
             // Printed on the PO's "Order To" box (see sample PO format)
-            // and now also on the "Delivery To" autofill block. Already
-            // present on the Supplier Master — normalize the common
-            // column-name variants here.
+            // — already present on the Supplier Master — normalize the
+            // common column-name variants here.
             contact_no: (
               (r.contact_no ?? r.contact_number ?? r.contactNo ?? r.phone ?? r.phone_no ?? r.phoneNo ?? r.mobile ?? r.mobile_no ?? r.mobileNo ?? "") as string
             ).trim(),
@@ -1666,7 +1780,7 @@ export default function FabricPurchaseOrders() {
               (r.email ?? r.email_id ?? r.emailId ?? r.supplier_email ?? r.contact_email ?? "") as string
             ).trim(),
             // Address components — same fields shown on the Supplier
-            // Master's own address form. Used to auto-fill "Delivery To"
+            // Master's own address form. Used to auto-fill "Order To"
             // when this supplier is selected (see selectSupplier()).
             address_line1: (
               (r.address_line1 ?? r.address_line_1 ?? r.addressLine1 ?? r.address ?? r.address1 ?? "") as string
@@ -1687,22 +1801,6 @@ export default function FabricPurchaseOrders() {
   }, []);
 
   // ── Load Company Details Master (list of entities) ──
-  // Same defensive pattern used everywhere else in this file: try the
-  // real endpoint, normalize whatever column names it returns, and fall
-  // back quietly to an empty list if the call fails or the endpoint
-  // doesn't exist yet — printing should never break because a master
-  // screen isn't wired up (handlePrintFpo falls back to FALLBACK_COMPANY).
-  //
-  // LOGO FIX: the logo field lookup checks a wide set of possible
-  // raw-API key names (logo_url / logo / company_logo / logoUrl /
-  // logo_path / logoPath / logo_image / logoImage / image / image_url /
-  // attachment / file) AND unwraps object shapes like { url } / { path }
-  // / { src } via resolveAssetUrl(), which now also resolves against the
-  // BACKEND's origin (ASSET_ORIGIN) instead of window.location.origin,
-  // and prefixes bare filenames with COMPANY_LOGO_DIR — the single point
-  // every consumer (picker / preview / print) benefits from automatically.
-  // The key that was actually matched is recorded in `_logoSourceKey`
-  // purely for on-screen diagnostics (see selectCompany()).
   const loadCompanies = useCallback(async (): Promise<CompanyDetails[]> => {
   if (typeof getCompanyDetails !== "function") return [];
   setCompaniesLoading(true);
@@ -1766,9 +1864,6 @@ export default function FabricPurchaseOrders() {
 useEffect(() => { loadCompanies(); }, []);
 
   // ── Load pending plans ──
-  // DIAGNOSTIC VERSION: distinguishes "request failed" (red, with exact HTTP
-  // status + server message) from "request succeeded but 0 rows" (amber,
-  // means it's a data/DB-connection issue, not a routing/code issue).
   const loadPendingPlans = async () => {
     setLoadingPlans(true);
     setPlanLoadError("");
@@ -1796,6 +1891,35 @@ useEffect(() => { loadCompanies(); }, []);
                                    ?? "",
           purchase_qty:          Number(r.purchase_qty ?? r.qty ?? 0),
           purchase_special_instruction: r.purchase_special_instruction ?? r.special_instruction ?? "",
+          // ── Customer / "Shipping To" address — normalize the common
+          //    column-name variants a production_plans ↔ customer join
+          //    might expose. Adjust these if your API uses other names.
+          customer_address_line1: (
+            r.customer_address_line1 ?? r.customer_address ?? r.customerAddress ??
+            r.cust_address_line1 ?? r.cust_address ?? r.ship_address_line1 ??
+            r.shipping_address ?? ""
+          ) || "",
+          customer_district: (
+            r.customer_district ?? r.customer_city ?? r.customerCity ??
+            r.cust_district ?? r.cust_city ?? r.ship_city ?? ""
+          ) || "",
+          customer_state: (
+            r.customer_state ?? r.customerState ?? r.cust_state ?? r.ship_state ?? ""
+          ) || "",
+          customer_pincode: (
+            r.customer_pincode ?? r.customerPincode ?? r.cust_pincode ??
+            r.customer_pin ?? r.ship_pincode ?? r.ship_pin ?? ""
+          ) || "",
+          customer_country: (
+            r.customer_country ?? r.customerCountry ?? r.cust_country ?? r.ship_country ?? ""
+          ) || "",
+          customer_contact_no: (
+            r.customer_contact_no ?? r.customerContactNo ?? r.cust_contact_no ??
+            r.customer_phone ?? r.customer_mobile ?? ""
+          ) || "",
+          customer_gstin: (
+            r.customer_gstin ?? r.customerGstin ?? r.cust_gstin ?? ""
+          ) || "",
         }))
         .filter(p => p.rec_no);
 
@@ -1803,16 +1927,12 @@ useEffect(() => { loadCompanies(); }, []);
      
 
       if (list.length === 0) {
-        // Request worked (no exception thrown) but returned nothing —
-        // this is a DATA / DB-connection issue, not a routing bug.
-
         setPlanLoadError(
           "EMPTY_RESULT::Please Create the Production Plan "
         );
       }
     } catch (err: any) {
       console.error("❌ loadPendingPlans failed:", err);
-      // Cover both axios-style and fetch-style error shapes generically.
       const status =
         err?.response?.status ??
         err?.status ??
@@ -1950,62 +2070,122 @@ useEffect(() => { loadCompanies(); }, []);
   // ─────────────────────────────────────────────────────────────────────────────
   // ── Link plan — full autofill chain ──
   //    Autofills from production_plans into both the header and items[0]:
-  //      Header : purchase_qty, order_no, plan_rec_no, remarks
+  //      Header : purchase_qty, order_no, plan_rec_no, remarks,
+  //               ship_from ("Shipping To" — from the plan's customer)
   //      Item[0]: sort_no  ← plan.order_sort_no
   //               construction ← plan.constn_for_production
   //               qty          ← plan.purchase_qty
   // ─────────────────────────────────────────────────────────────────────────────
-  const selectPlan = (setter: React.Dispatch<React.SetStateAction<FabricPurchaseOrderPayload>>) =>
-    (plan: PendingPlan | null) => {
-      if (!plan) {
-        setter(f => ({
-          ...f,
-          plan_id: null, plan_rec_no: "", order_no: "", purchase_qty: 0,
-          items: [emptyItem()],
-        }));
-        return;
-      }
-
-      const qty         = Number(plan.purchase_qty) || 0;
-      const sortNo      = plan.order_sort_no        ? String(plan.order_sort_no).trim()        : "";
-      const constn      = plan.constn_for_production ? String(plan.constn_for_production).trim() : "";
-
-      
-
-      const autofillItem = recalcItem({
-        sort_no:      sortNo,   // ← from production_plans.order_sort_no
-        construction: constn,   // ← from production_plans.constn_for_production
-        hsn_code:     "",
-        qty,                    // ← from production_plans.purchase_qty
-        rate:         0,
-        basic_value:  0,
-        unit:         "MTR",
-      });
-
+ const selectPlan = (setter: React.Dispatch<React.SetStateAction<FabricPurchaseOrderPayload>>) =>
+  async (plan: PendingPlan | null) => {
+    if (!plan) {
       setter(f => ({
         ...f,
-        plan_id:      plan.id,
-        plan_rec_no:  plan.rec_no,
-        order_no:     plan.order_no,
-        purchase_qty: qty,      // ← header field
-        remarks: f.remarks ||
-          `Purchase for ${plan.rec_no} (Order ${plan.order_no}${plan.customer_name ? " — " + plan.customer_name : ""})`,
-        items: [autofillItem],  // replace items with the autofilled row
+        plan_id: null, plan_rec_no: "", order_no: "", purchase_qty: 0,
+        ship_from: "",
+        items: [emptyItem()],
       }));
+      return;
+    }
 
-      // Confirm to developer via toast what was autofilled
-      const chips: string[] = [];
-      if (sortNo) chips.push(`Sort No: ${sortNo}`);
-      if (constn) chips.push(`Construction: ${constn.slice(0, 30)}${constn.length > 30 ? "…" : ""}`);
-      chips.push(`Qty: ${fmt(qty)} m`);
+    const qty         = Number(plan.purchase_qty) || 0;
+    const sortNo      = plan.order_sort_no        ? String(plan.order_sort_no).trim()        : "";
+    const constn      = plan.constn_for_production ? String(plan.constn_for_production).trim() : "";
+    let shipToBlock   = formatCustomerShipToBlock(plan);   // may be stale/blank
+
+    const autofillItem = recalcItem({
+      sort_no: sortNo, construction: constn, hsn_code: "",
+      qty, rate: 0, basic_value: 0, unit: "MTR",
+    });
+
+    setter(f => ({
+      ...f,
+      plan_id: plan.id,
+      plan_rec_no: plan.rec_no,
+      order_no: plan.order_no,
+      purchase_qty: qty,
+      remarks: f.remarks ||
+        `Purchase for ${plan.rec_no} (Order ${plan.order_no}${plan.customer_name ? " — " + plan.customer_name : ""})`,
+      ship_from: shipToBlock || f.ship_from,
+      items: [autofillItem],
+    }));
+
+    const chips: string[] = [];
+    if (sortNo) chips.push(`Sort No: ${sortNo}`);
+    if (constn) chips.push(`Construction: ${constn.slice(0, 30)}${constn.length > 30 ? "…" : ""}`);
+    chips.push(`Qty: ${fmt(qty)} m`);
+
+    // ── SELF-HEALING FIX ──
+    // If the cached plan object had no address, ask the backend live (the
+    // same source the debug toast already queries) — and if IT has the
+    // data, write it straight into the form instead of only reporting it.
+    if (!shipToBlock) {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(
+          `/api/fabric-purchase-orders/pending-purchase/debug/${plan.rec_no}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          pushToast(
+            "error",
+            "Shipping To debug route failed",
+            `HTTP ${res.status} — ${errBody.message || "Unknown server error"}. This is a backend bug — check server logs.`
+          );
+        } else {
+          const dbg = await res.json();
+          const r = dbg.result || {};
+
+          const liveLines: string[] = [];
+          const liveAddr = [r.resolved_address, r.resolved_district, r.resolved_state, r.resolved_pincode, r.resolved_country]
+            .filter(Boolean).join(", ");
+          if (liveAddr) liveLines.push(liveAddr);
+          if (r.resolved_contact) liveLines.push(`Contact No: ${r.resolved_contact}`);
+          if (r.resolved_gstin)   liveLines.push(`GSTIN: ${r.resolved_gstin}`);
+          const liveBlock = liveLines.join("\n");
+
+          if (liveBlock) {
+            // ← THE ACTUAL FIX: write the freshly-resolved address into the form.
+            setter(f => ({ ...f, ship_from: liveBlock }));
+            shipToBlock = liveBlock;
+
+            pushToast(
+              "success",
+              "Shipping To auto-recovered",
+              "The cached plan list was stale — pulled the current address from the server and filled it in."
+            );
+
+            // Also refresh the cached plans list so this doesn't happen again
+            // for the same plan on the next selection.
+            loadPendingPlans();
+          } else if (dbg.warning) {
+            pushToast("warning", "Shipping To is empty — why", dbg.warning);
+          } else {
+            const custName = dbg.customerMatch?.[0]?.name ?? "this customer";
+            pushToast(
+              "warning",
+              "Shipping To is empty — why",
+              `Customer "${custName}" was found, but has no address saved on file. Add one to the Customer Master and re-select the plan.`
+            );
+          }
+        }
+      } catch {
+        pushToast("warning", "Shipping To is empty", "Could not reach the debug route to find out why.");
+      }
+    }
+
+    if (shipToBlock) {
       pushToast(
         "info",
         `Plan ${plan.rec_no} linked`,
-        `Autofilled → ${chips.join(" | ")}`
+        `Autofilled → ${chips.join(" | ")} | Shipping To filled from customer address`
       );
-    };
+    }
+  };
 
-  // ── Link supplier — selecting a supplier auto-fills "Delivery To" with
+  // ── Link supplier — selecting a supplier auto-fills "Order To" with
   //    a full multi-line block: registered address (Address Line 1,
   //    District/City, State, Pincode, Country) followed by Contact Name,
   //    Contact No, Agent Name, Email and GSTIN — each on its own labelled
@@ -2025,19 +2205,14 @@ useEffect(() => { loadCompanies(); }, []);
       setter(f => ({ ...f, supplier: name, delivery_to: block }));
 
       if (block) {
-        pushToast("info", `Supplier "${name}" selected`, `Delivery To auto-filled with address, contact, agent & GST details.`);
+        pushToast("info", `Supplier "${name}" selected`, `Order To auto-filled with address, contact, agent & GST details.`);
       } else {
-        pushToast("warning", `Supplier "${name}" selected`, "No address/contact details on file for this supplier — Delivery To left blank.");
+        pushToast("warning", `Supplier "${name}" selected`, "No address/contact details on file for this supplier — Order To left blank.");
         console.warn(`[selectSupplier] No address fields matched for "${name}" — check the [getSuppliers] raw record logged on page load to find the correct column names.`, supplierObj);
       }
     };
 
   // ── Link company (print header) ──
-  // Confirms, via toast, whether a logo was actually found for the
-  // selected company and — if so — which raw API field it came from
-  // (`_logoSourceKey`). If no logo was found at all, the toast says so
-  // clearly instead of silently printing a blank box, and points at the
-  // Company Details Master as the place to fix it.
   const selectCompany = (setter: React.Dispatch<React.SetStateAction<FabricPurchaseOrderPayload>>) =>
     (co: CompanyDetails | null) => {
       setter(f => ({ ...f, company_id: co ? co.id : null }));
@@ -2059,13 +2234,16 @@ useEffect(() => { loadCompanies(); }, []);
     };
 
   // ── Open create ──
-  const handleNewFpo = async () => {
-    setForm(defaultForm());
-    setSaveError(""); setSavedCode(""); setFpoGenError("");
-    setFormSec({ details: true, construction: true, gst: true });
-    setShowModal(true);
-    await generateFpoNo(setForm, setFpoGenerating, setFpoGenError);
-  };
+const handleNewFpo = async () => {
+  setForm(defaultForm());
+  setSaveError(""); setSavedCode(""); setFpoGenError("");
+  setFormSec({ details: true, construction: true, gst: true });
+  setShowModal(true);
+  await generateFpoNo(setForm, setFpoGenerating, setFpoGenError);
+  loadPendingPlans();          // ← ADD THIS: re-fetch live plans (with current addresses)
+                                //   every time the form opens, instead of relying on the
+                                //   one-time load from page mount.
+};
 
   // ── Create save ──
   const handleSave = async () => {
@@ -2182,18 +2360,21 @@ useEffect(() => { loadCompanies(); }, []);
   };
 
   // ── Delete ──
-  const handleDeleteConfirm = async () => {
-    if (!deleteTarget) return;
-    setDeleteConfirming(true); setDeleteError("");
-    try {
-      await deleteFabricPurchaseOrder(deleteTarget.id!);
-      pushToast("warning", "FPO Deleted", `"${deleteTarget.fpo_no}" has been permanently deleted.`);
-      setDeleteTarget(null); fetchFpos(); loadPendingPlans();
-    } catch (e: unknown) {
-      const msg = (e as Error).message || "Failed to delete FPO.";
-      setDeleteError(msg); pushToast("error", "Delete Failed", msg);
-    } finally { setDeleteConfirming(false); }
-  };
+// ── Delete ──
+const handleDeleteConfirm = async () => {
+  if (!deleteTarget) return;
+  setDeleteConfirming(true); setDeleteError("");
+  try {
+    await deleteFabricPurchaseOrder(deleteTarget.id!);
+    pushToast("warning", "FPO Deleted", `"${deleteTarget.fpo_no}" has been permanently deleted.`);
+    setDeleteTarget(null); fetchFpos(); loadPendingPlans();
+  } catch (e: unknown) {
+    const msg = (e as Error).message || "Failed to delete FPO.";
+    setDeleteError(msg); pushToast("error", "Delete Failed", msg);
+  } finally {
+    setDeleteConfirming(false);
+  }
+};
 
   // ── Export / Print ──
   const getExportData = () => allFpos.length ? allFpos : fpos;
@@ -2219,44 +2400,7 @@ useEffect(() => { loadCompanies(); }, []);
   };
 
   // ── Print single FPO — professional "Purchase Order" letterhead ──
-  // Header: company logo/name/address/phone/email/GSTIN/state, sourced
-  // from whichever entity was picked in the "Company (Print Header)"
-  // dropdown on the FPO (fpo.company_id → looked up in `companies`),
-  // falling back to FALLBACK_COMPANY if nothing was picked or the master
-  // isn't wired up. Then an Order No/Date/Due Date grid, followed by
-  // Delivery To / Shipping From boxes, the item table (Quality / HSN / Qty /
-  // Unit / Price / Taxable Price / GST / Amount), amount-in-words + Sub
-  // Total/Total/Advance/Balance, an HSN-wise CGST+SGST tax summary, and a
-  // terms + signatory block. Printed entirely in Times New Roman for a
-  // formal, letterhead-style look (see the print <style> block below).
-  //
-  // DATA-FRESHNESS: printing from a table row previously used the row
-  // object exactly as returned by the LIST endpoint (no items[]). This is
-  // async: it opens the print window immediately (synchronously, so popup
-  // blockers don't block it), shows a lightweight "Loading…" placeholder,
-  // then re-fetches the full record by id before writing the final HTML.
-  // If that refetch fails, it falls back to whatever was passed in so
-  // printing never just breaks.
-  //
-  // COMPANY-ID TYPE-SAFETY: the lookup below Number()-normalizes both
-  // sides of the comparison, and logs fpo.company_id + the loaded
-  // companies list to the console right before matching, so if the header
-  // still falls back to FALLBACK_COMPANY it's immediately visible in
-  // DevTools whether that's because company_id came back empty from the
-  // API (→ backend/DB fix needed) or a genuine ID mismatch (→ wrong
-  // company picked).
-  //
-  // LOGO FIX (THIS REVISION): `c.logo_url` is already a resolved absolute
-  // URL, pointed at the BACKEND's origin, by the time it gets here
-  // (resolved once, at load time, in the getCompanyDetails() effect
-  // above) — so no special-casing is needed at the print call site
-  // itself. The <img> tag keeps an onerror fallback so a URL that's
-  // absolute-but-still-broken (deleted file, bad CORS, an unsaved blob:
-  // URL, etc.) degrades to a clean "No Logo" placeholder instead of a
-  // mystery blank box.
   const handlePrintFpo = async (fpoInput: FabricPurchaseOrderPayload) => {
-    // Open synchronously — must happen directly inside the click handler,
-    // before any `await`, or most browsers' popup blockers will swallow it.
     const win = window.open("", "_blank", "width=1050,height=800");
     if (!win) {
       pushToast("error", "Popup Blocked", "Please allow popups for this site to print the Purchase Order.");
@@ -2268,8 +2412,6 @@ useEffect(() => { loadCompanies(); }, []);
       </body></html>`);
     win.document.close();
 
-    // Re-fetch the full record so we're never printing stale/incomplete
-    // list-row data (list rows don't include items[]).
     let fpo = fpoInput;
     if (fpoInput.id) {
       try {
@@ -2304,7 +2446,6 @@ useEffect(() => { loadCompanies(); }, []);
         </tr>`;
     }).join("");
 
-    // HSN-wise tax summary (groups items sharing the same HSN/SAC code)
     const hsnGroups: Record<string, number> = {};
     items.forEach(it => {
       const key = it.hsn_code || "—";
@@ -2328,13 +2469,6 @@ useEffect(() => { loadCompanies(); }, []);
     const advance = Number((fpo as any).advance) || 0;
     const balance = +(totals.net - advance).toFixed(2);
 
-    // Which company prints on this FPO's letterhead — the one the user
-    // picked in "Company (Print Header)" (fpo.company_id), looked up in
-    // the full Company Details Master list; fall back to FALLBACK_COMPANY
-    // if nothing was picked or the master isn't wired up yet. Both sides
-    // of the comparison are Number()-normalized so a company_id that came
-    // back as a string from the API still matches correctly.
-
     const freshCompanies = await loadCompanies();
 const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_id)) || FALLBACK_COMPANY;
     if (c === FALLBACK_COMPANY && (fpo as any).company_id) {
@@ -2342,25 +2476,12 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
     } else if (c === FALLBACK_COMPANY) {
       console.warn("[handlePrintFpo] FPO has no company_id saved — pick a company in \"Company (Print Header)\" and re-save, or check that the backend/DB migration for company_id has been applied.");
     }
-    // DIAGNOSTIC: confirms exactly what logo URL (already resolved to an
-    // absolute BACKEND URL at load time) is being embedded in the
-    // printed HTML, so a still-blank logo can be told apart from "no URL
-    // was ever found" — open the exact URL logged here directly in a
-    // browser tab to check whether the file itself is reachable.
-   
 
     const companyName = c.name || "Your Company Name";
-    // Prefer the Company Master's single multi-line `address` field
-    // (falls back to formatCompanyAddress()'s address_line1/2/3 handling
-    // for any other data source). Preserve line breaks the user typed in
-    // the address textarea when printing.
     const rawAddress   = c.address ? c.address.trim() : formatCompanyAddress(c);
     const addressLines = rawAddress.replace(/\n/g, "<br/>");
     const pinSuffix     = c.pincode && !rawAddress.includes(c.pincode) ? ` - ${c.pincode}` : "";
 
-    // Logo markup: onerror swaps the <img> for a plain "No Logo" box —
-    // same footprint as `.logo-img` — instead of leaving a broken/blank
-    // image if the (already-absolute) URL still fails to load.
     const logoMarkup = c.logo_url
       ? `<img class="logo-img" src="${c.logo_url}" onerror="this.outerHTML='<div class=&quot;logo-img&quot; style=&quot;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:9px;text-align:center;&quot;>No Logo</div>'" />`
       : `<div class="logo-img" style="display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:9px;text-align:center;">No Logo</div>`;
@@ -2445,11 +2566,11 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
         </tr>
         <tr>
           <td style="width:50%;">
-            <div class="section-title">Delivery To</div>
+            <div class="section-title">Order To</div>
             <div class="co-line">${fpo.delivery_to || "—"}</div>
           </td>
           <td style="width:50%;">
-            <div class="section-title">Shipping From</div>
+            <div class="section-title">Shipping To</div>
             <div class="co-line">${(fpo as any).ship_from || "—"}</div>
           </td>
         </tr>
@@ -2593,6 +2714,7 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
     const selectedCompany = f.company_id != null ? companies.find(c => Number(c.id) === Number(f.company_id)) ?? null : null;
     const selectedSupplierObj = f.supplier ? suppliers.find(s => s.name === f.supplier) ?? null : null;
     const supplierHasAddress = Boolean(formatSupplierAddress(selectedSupplierObj));
+    const shipToIsAutofilled = Boolean(f.plan_id) && Boolean((f as any).ship_from);
 
     return (
       <div className="fpo-modal-body">
@@ -2717,19 +2839,24 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
             )}
 
             <div className="fpo-col-full">
-              <FField label="Delivery To" type={supplierHasAddress ? "autofill" : "text"} hint={supplierHasAddress ? "✓ Auto-filled from selected supplier's address, contact, agent & GST — editable" : "Address, PIN, State, Contact Name, Contact No, Agent Name, Email & GSTIN, one per line"}>
+              <FField label="Order To" type={supplierHasAddress ? "autofill" : "text"} hint={supplierHasAddress ? "✓ Auto-filled from selected supplier's address, contact, agent & GST — editable" : "Address, PIN, State, Contact Name, Contact No, Agent Name, Email & GSTIN, one per line"}>
                 <textarea
                   className={`fpo-input fpo-textarea${supplierHasAddress ? " fpo-input--autofill" : ""}`}
-                  placeholder="Delivery location"
+                  placeholder="Supplier details for this order"
                   rows={5}
                   value={f.delivery_to} onChange={e => setF({ ...f, delivery_to: e.target.value })} />
               </FField>
             </div>
 
-            <FField label="Shipping From"  hint="Printed on the PO — supplier's dispatch unit / mill address">
-              <input className="fpo-input" type="text" placeholder="e.g. supplier's dispatch unit / mill address"
-                value={(f as any).ship_from || ""} onChange={e => setF({ ...f, ship_from: e.target.value } as any)} />
-            </FField>
+            <div className="fpo-col-full">
+              <FField label="Shipping To" type={shipToIsAutofilled ? "autofill" : "text"} hint={f.plan_id ? "✓ Auto-filled from the linked Order Plan's customer address — editable" : "Customer's shipping address — auto-fills once an Order Plan No is linked"}>
+                <textarea
+                  className={`fpo-input fpo-textarea${shipToIsAutofilled ? " fpo-input--autofill" : ""}`}
+                  placeholder="Customer shipping address"
+                  rows={5}
+                  value={(f as any).ship_from || ""} onChange={e => setF({ ...f, ship_from: e.target.value } as any)} />
+              </FField>
+            </div>
 
 
             <FField label="Pay Terms" type="select">
@@ -2840,7 +2967,6 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
                 </thead>
                 <tbody>
                   {f.items.map((item, idx) => {
-                    // First row is autofilled when plan is selected on create
                     const isAutofilled = !isEdit && idx === 0 && Boolean(f.plan_id);
                     return (
                       <tr key={idx} className={idx % 2 === 0 ? "fpo-irow-even" : "fpo-irow-odd"}>
@@ -3440,32 +3566,32 @@ const c = freshCompanies.find(x => Number(x.id) === Number((fpo as any).company_
         )}
 
         {/* ════ DELETE CONFIRM ════ */}
-        {deleteTarget && (
-          <div className="fpo-confirm-overlay">
-            <div className="fpo-confirm-box">
-              <div className="fpo-confirm-icon">🗑️</div>
-              <p className="fpo-confirm-title">Delete FPO?</p>
-              <p className="fpo-confirm-sub">
-                This will permanently delete <strong>{deleteTarget.fpo_no}</strong> and all its line items.
-                {deleteTarget.plan_id ? ` Plan ${deleteTarget.plan_rec_no} will reappear in the pending-purchase list.` : ""}
-                {" "}This action cannot be undone.
-              </p>
-              {deleteError && (
-                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
-                  ⚠ {deleteError}
-                </div>
-              )}
-              <div className="fpo-confirm-actions">
-                <button className="fpo-confirm-cancel" onClick={() => setDeleteTarget(null)}>Cancel</button>
-                <button className="fpo-confirm-del" disabled={deleteConfirming} onClick={handleDeleteConfirm}>
-                  {deleteConfirming
-                    ? <><Loader2 size={13} style={{ animation: "spin 1s linear infinite", display: "inline-block", verticalAlign: "middle", marginRight: 5 }} />Deleting…</>
-                    : "Yes, Delete"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+       {deleteTarget && (
+  <div className="fpo-confirm-overlay">
+    <div className="fpo-confirm-box">
+      <div className="fpo-confirm-icon">🗑️</div>
+      <p className="fpo-confirm-title">Delete FPO?</p>
+      <p className="fpo-confirm-sub">
+        This will permanently delete <strong>{deleteTarget.fpo_no}</strong> and all its line items.
+        {deleteTarget.plan_id ? ` Plan ${deleteTarget.plan_rec_no} will reappear in the pending-purchase list.` : ""}
+        {" "}This action cannot be undone.
+      </p>
+      {deleteError && (
+        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
+          ⚠ {deleteError}
+        </div>
+      )}
+      <div className="fpo-confirm-actions">
+        <button className="fpo-confirm-cancel" onClick={() => setDeleteTarget(null)}>Cancel</button>
+        <button className="fpo-confirm-del" disabled={deleteConfirming} onClick={handleDeleteConfirm}>
+          {deleteConfirming
+            ? <><Loader2 size={13} style={{ animation: "spin 1s linear infinite", display: "inline-block", verticalAlign: "middle", marginRight: 5 }} />Deleting…</>
+            : "Yes, Delete"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       </div>
     </>

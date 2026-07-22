@@ -4,6 +4,13 @@
 // order_bookings.confirm_by is aliased → confirmed_by in the API response.
 // When opening an existing plan for edit, confirmed_by is re-fetched the same way.
 //
+// NEW: "Delivery Address" is also auto-fetched from the SAME endpoint
+// (GET /api/production-plans/order/:orderNo) whenever an Order No is
+// selected — same trigger as Order Date / Order Sort No / Confirmed By.
+// The backend returns it as one pre-formatted multi-line text block
+// (co.delivery_address), so it's rendered read-only, exactly like the other
+// order-derived fields. It is saved onto the plan as-is.
+//
 // FIX: All dates now use fmtDate() which parses YYYY-MM-DD strings directly
 // (splitting on '-') to avoid UTC→local timezone shift that caused dates to
 // display one day behind (e.g. 12/6/2026 showing as 11/6/2026 in IST).
@@ -30,7 +37,7 @@ import {
   Loader2, AlertCircle, CheckCircle2, Info,
   AlertTriangle, Trash2, PlusCircle, Check,
   Download, FileText, FileSpreadsheet, Printer,
-  Factory, Truck,
+  Factory, Truck, MapPin,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -57,6 +64,7 @@ interface ProductionPlan {
   order_sort_no: string;
   customer_name?: string;
   confirmed_by: string;
+  delivery_address: string;   // ← NEW: auto-filled from order_bookings on order select
   constn_for_production: string;
   order_quantity: string;
   allocated_qty: string;
@@ -605,6 +613,7 @@ const BLANK: ProductionPlan = {
   order_no: '', order_date: '', order_sort_no: '',
   customer_name: '',
   confirmed_by: '',
+  delivery_address: '',   // ← NEW
   constn_for_production: '', order_quantity: '',
   allocated_qty: '', stock_special_instruction: '',
   production_qty: '', inhouse_prod_qty: '', vendor_prod_qty: '', prod_special_instruction: '',
@@ -645,6 +654,7 @@ const sanitizePlan = (data: any): ProductionPlan => ({
   order_sort_no:                data.order_sort_no                ?? '',
   customer_name:                data.customer_name                ?? '',
   confirmed_by:                 data.confirmed_by                 ?? '',
+  delivery_address:             data.delivery_address             ?? '',   // ← NEW
   constn_for_production:        data.constn_for_production        ?? '',
   order_quantity:               data.order_quantity  != null ? String(data.order_quantity)  : '',
   allocated_qty:                data.allocated_qty   != null ? String(data.allocated_qty)   : '',
@@ -721,6 +731,55 @@ function DisplayField({
           </span>
         ) : (value ?? <span style={{ color: '#cbd5e1' }}>—</span>)}
       </div>
+    </div>
+  );
+}
+
+// ── NEW: multi-line read-only display, used for Delivery Address ─────────────
+function AddressDisplayField({
+  label, value, loading, hint,
+}: {
+  label: string;
+  value?: string | null;
+  loading?: boolean;
+  hint?: string;
+}) {
+  const hasValue = !!(value && value.trim());
+  return (
+    <div>
+      <label style={s.label}>
+        {label} <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(from order)</span>
+      </label>
+      <div style={{
+        ...s.input,
+        minHeight: 92,
+        background: loading ? '#f8fafc' : (hasValue ? '#f0fdf4' : '#f8fafc'),
+        color:      loading ? '#94a3b8' : (hasValue ? '#166534' : '#9ca3af'),
+        fontWeight: hasValue && !loading ? 600 : 400,
+        cursor: 'not-allowed',
+        display: 'flex',
+        alignItems: loading || !hasValue ? 'center' : 'flex-start',
+        gap: 6,
+        whiteSpace: 'pre-line',
+        lineHeight: 1.6,
+        opacity: loading ? 0.75 : 1,
+        transition: 'opacity 0.2s',
+      }}>
+        {loading ? (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#94a3b8', fontSize: 12 }}>
+            <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }} />
+            Fetching…
+          </span>
+        ) : hasValue ? (
+          <span style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <MapPin size={14} style={{ color: '#0f766e', flexShrink: 0, marginTop: 2 }} />
+            <span>{value}</span>
+          </span>
+        ) : (
+          <span style={{ color: '#cbd5e1' }}>— auto-filled from order —</span>
+        )}
+      </div>
+      {hint && <p style={{ margin: '3px 0 0', fontSize: 11, color: '#94a3b8' }}>{hint}</p>}
     </div>
   );
 }
@@ -942,6 +1001,9 @@ export default function ProductionPlanningMaster() {
   };
 
   // ── fetchOrderDetail ───────────────────────────────────────────────────────
+  // NEW: also picks up `delivery_address` (pre-formatted text block) from the
+  // same order-detail response and writes it onto the form, same as the
+  // other order-derived fields.
   const fetchOrderDetail = async (orderNo: string) => {
     if (!orderNo) return;
     setLoadingOrderDetail(true);
@@ -953,12 +1015,13 @@ export default function ProductionPlanningMaster() {
       if (!co) { setLoadingOrderDetail(false); return; }
 
       console.log('[fetchOrderDetail] Response for', orderNo, '→', {
-        order_date:     co.order_date,
-        order_sort_no:  co.order_sort_no,
-        customer_name:  co.customer_name,
-        confirmed_by:   co.confirmed_by,
-        order_quantity: co.order_quantity,
-        constn_as_po:   co.constn_as_po,
+        order_date:       co.order_date,
+        order_sort_no:    co.order_sort_no,
+        customer_name:    co.customer_name,
+        confirmed_by:     co.confirmed_by,
+        order_quantity:   co.order_quantity,
+        constn_as_po:     co.constn_as_po,
+        delivery_address: co.delivery_address,
       });
 
       setForm(f => ({
@@ -968,6 +1031,8 @@ export default function ProductionPlanningMaster() {
         order_sort_no:  co.order_sort_no  != null ? String(co.order_sort_no)  : f.order_sort_no,
         customer_name:  co.customer_name  != null ? String(co.customer_name)  : f.customer_name,
         confirmed_by:   co.confirmed_by   != null ? String(co.confirmed_by)   : f.confirmed_by,
+        // ← NEW: delivery_address comes back as a ready-to-display multi-line block
+        delivery_address: co.delivery_address != null ? String(co.delivery_address) : f.delivery_address,
         order_quantity: (() => {
           const qty = co.order_quantity ?? co.total_meters ?? co.meter ?? co.meters;
           return qty != null && Number(qty) > 0 ? String(qty) : f.order_quantity;
@@ -1003,13 +1068,16 @@ export default function ProductionPlanningMaster() {
   };
 
   // ── Select order no — autofill all fields ─────────────────────────────────
+  // NEW: delivery_address is cleared immediately on selection (it isn't part
+  // of the lightweight order-list options), then filled in a moment later by
+  // fetchOrderDetail() below — same pattern as order_date/confirmed_by.
   const selectOrderNo = (orderNo: string) => {
     if (!orderNo) {
       setForm(prev => ({
         ...prev,
         order_no: '', order_date: '', order_sort_no: '',
         order_quantity: '', constn_for_production: '',
-        customer_name: '', confirmed_by: '',
+        customer_name: '', confirmed_by: '', delivery_address: '',
       }));
       return;
     }
@@ -1025,6 +1093,7 @@ export default function ProductionPlanningMaster() {
       constn_for_production: found?.construction || found?.sort_no               || prev.constn_for_production,
       customer_name:         found?.customer_name                                ?? prev.customer_name,
       confirmed_by:          found?.confirmed_by                                 ?? prev.confirmed_by,
+      delivery_address:      '',   // ← NEW: cleared until fetchOrderDetail resolves
     }));
 
     fetchOrderDetail(orderNo);
@@ -1122,6 +1191,7 @@ export default function ProductionPlanningMaster() {
       order_sort_no:                form.order_sort_no,
       customer_name:                form.customer_name ?? '',
       confirmed_by:                 form.confirmed_by ?? '',
+      delivery_address:             form.delivery_address ?? '',   // ← NEW
       constn_for_production:        form.constn_for_production,
       order_quantity:               form.order_quantity,
       allocated_qty:                form.allocated_qty,
@@ -1198,6 +1268,7 @@ export default function ProductionPlanningMaster() {
       'Order No':       p.order_no ?? '',
       'Customer':       p.customer_name ?? '',
       'Confirmed By':   p.confirmed_by ?? '',
+      'Delivery Address': (p.delivery_address ?? '').replace(/\n/g, ' | '),  // ← NEW (flattened for CSV/Excel row)
       'Construction':   p.constn_for_production ?? '',
       'Order Qty':      p.order_quantity ?? '',
       'Vendor':         p.vendor_name ?? '',       // ← NEW
@@ -1696,7 +1767,7 @@ export default function ProductionPlanningMaster() {
                             ...prev, order_type: newType,
                             order_no: '', order_date: '', order_sort_no: '',
                             order_quantity: '', constn_for_production: '',
-                            customer_name: '', confirmed_by: '',
+                            customer_name: '', confirmed_by: '', delivery_address: '',
                           }));
                           setSec(prev => ({ ...prev, linking: newType === 'Open Order' }));
                           fetchOrderOptions(newType);
@@ -1800,6 +1871,16 @@ export default function ProductionPlanningMaster() {
                         : undefined}
                       loading={loadingOrderDetail}
                     />
+
+                    {/* ── NEW: Delivery Address — auto-filled from the selected Order, full width ── */}
+                    <div className="pp-col-full">
+                      <AddressDisplayField
+                        label="Delivery Address"
+                        value={form.delivery_address}
+                        loading={loadingOrderDetail}
+                        hint="Auto-fetched from Order Bookings when Order No is selected · read-only"
+                      />
+                    </div>
 
                     <div style={{ gridColumn: 'span 2' }}>
                       <Field label="Construction for Production" hint="Auto-filled from Construction as PO (Order Details) — edit if needed.">

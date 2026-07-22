@@ -8,11 +8,27 @@
 // UNION of both sources, each row tagged with source: "inward" | "manual".
 
 const express = require('express');
+const crypto  = require('crypto');
 const router  = express.Router();
 const db      = require('../db/connection');
 const { auth } = require('../middleware/auth');
 
-console.log('✅ fabric-stock router loaded — combined (inward + manual) v3');
+// ── Server instance fingerprint ───────────────────────────────────────────
+// Generated ONCE when this module is loaded (i.e. once per server process
+// boot). Sent back as a response header on every route below. If you ever
+// see this value differ between two requests in the same browser session
+// (e.g. compare the GET /fabric-stock request vs the DELETE /manual/:id
+// request in DevTools → Network → Headers), that's conclusive proof you
+// have more than one backend process alive and traffic is bouncing between
+// them — which fully explains "GET shows a row, DELETE 404s on it" even
+// though nothing is wrong with the query logic itself.
+const SERVER_INSTANCE_ID = crypto.randomUUID();
+router.use((req, res, next) => {
+  res.set('X-Server-Instance', SERVER_INSTANCE_ID);
+  next();
+});
+
+console.log(`✅ fabric-stock router loaded — combined (inward + manual) v6 — instance ${SERVER_INSTANCE_ID}`);
 
 // ── Build a "fpo_no::sort_no" → { construction, hsn_code } map ───────────────
 async function buildConstructionMap(fpoNos) {
@@ -160,6 +176,7 @@ async function generateManualEntryNo() {
 
 // ── GET /api/fabric-stock — piece-level rows (inward + manual) ───────────
 router.get('/', auth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const rows = await getCombinedStockRows();
     res.json(rows);
@@ -171,6 +188,7 @@ router.get('/', auth, async (req, res) => {
 
 // ── GET /api/fabric-stock/summary — grouped by Sort No + Construction ────
 router.get('/summary', auth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const rows   = await getCombinedStockRows();
     const groups = new Map();
@@ -216,6 +234,7 @@ router.get('/summary', auth, async (req, res) => {
 
 // ── GET /api/fabric-stock/filters — distinct dropdown values (both sources) ─
 router.get('/filters', auth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   try {
     const [locInward] = await db.query(
       `SELECT DISTINCT inward_to AS v FROM fabric_purchase_inward WHERE inward_to IS NOT NULL AND inward_to <> ''`
@@ -236,6 +255,38 @@ router.get('/filters', auth, async (req, res) => {
     res.json({ locations, suppliers });
   } catch (err) {
     console.error('❌ GET /fabric-stock/filters ERROR:', err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── GET /api/fabric-stock/debug — raw table dump for troubleshooting ─────
+// TEMPORARY diagnostic route, reinstated because rows with hardcoded,
+// non-sequential ids (e.g. 1000000002, 1000000004 — note these don't
+// match the MS-000001 style generateManualEntryNo() produces) are
+// reappearing after restarts. That pattern means they're being inserted
+// by something OTHER than POST /manual — most likely a seed script,
+// fixtures file, or DB init script that runs on server/container boot.
+// Hit this route (logged in) to see the raw current contents + which DB
+// the server is actually using:
+//   GET http://localhost:5000/api/fabric-stock/debug
+// Remove this route again once the source of the re-insertion is found
+// and disabled.
+router.get('/debug', auth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const [rows] = await db.query(`SELECT * FROM fabric_stock_manual ORDER BY id DESC`);
+    const [dbInfo] = await db.query(`SELECT DATABASE() AS db_name`);
+    const [procRows] = await db.query(`SHOW PROCESSLIST`).catch(() => [[]]);
+    res.json({
+      server_instance: SERVER_INSTANCE_ID,
+      connected_database: dbInfo[0]?.db_name || 'unknown',
+      row_count: rows.length,
+      rows,
+      // helps spot if multiple app connections are hitting this DB at once
+      active_connections: Array.isArray(procRows) ? procRows.length : undefined,
+    });
+  } catch (err) {
+    console.error('❌ GET /fabric-stock/debug ERROR:', err.message);
     res.status(500).json({ message: err.message });
   }
 });
@@ -281,6 +332,7 @@ router.post('/manual', auth, async (req, res) => {
       ]
     );
 
+    console.log(`✅ Manual stock entry inserted — id=${result.insertId}, entry_no=${entryNo}`);
     res.status(201).json({ id: result.insertId, entry_no: entryNo, message: 'Stock entry added.' });
   } catch (err) {
     console.error('❌ POST /fabric-stock/manual ERROR:', err.message);
@@ -342,7 +394,9 @@ router.put('/manual/:id', auth, async (req, res) => {
 router.delete('/manual/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
+
     const [result] = await db.query(`DELETE FROM fabric_stock_manual WHERE id = ?`, [id]);
+
     if (!result.affectedRows) {
       return res.status(404).json({ message: 'Manual stock entry not found.' });
     }

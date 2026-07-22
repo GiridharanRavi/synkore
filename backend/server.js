@@ -59,6 +59,24 @@ app.use('/api/yarn-purchase-orders', yarnPurchaseOrderRoutes);
 const yarnPurchaseInwardRoute  = require('./routes/yarnPurchaseInward');
 app.use('/api/yarn-purchase-inward', yarnPurchaseInwardRoute);
 
+// Yarn Purchase Invoice — supplier bill entry against a Yarn Purchase Order
+// (YPO). Sibling of the Fabric "purchase-invoices" module below, but reads
+// straight from yarn_purchase_orders / yarn_po_items instead of guessing
+// table shapes. Mounted here, right after Yarn PO / Yarn Inward, since it
+// reads from the same yarn tables.
+const yarnPurchaseInvoiceRoutes = require('./routes/yarnPurchaseInvoiceRoutes'); // ← NEW
+app.use('/api/yarn-purchase-invoices', yarnPurchaseInvoiceRoutes);               // ← NEW
+
+
+const salesReportRoutes = require('./routes/salesReportRoutes');
+app.use('/api/sales-report', salesReportRoutes);
+
+const purchaseReportRoutes = require('./routes/purchaseReportRoutes');
+app.use('/api/purchase-report', purchaseReportRoutes);
+
+const dispatchRoutes = require('./routes/Dispatchroutes');
+app.use('/api/dispatches', dispatchRoutes);
+
 // Yarn Stock — read-only, derived from Yarn Purchase Inward (see
 // yarn_stock_schema.sql for the underlying v_yarn_stock_summary /
 // v_yarn_stock_items views). Mounted right after Yarn Purchase Inward
@@ -123,7 +141,7 @@ const convRouter = require('./routes/orderConversions');
 
 app.use('/api/auth',                   require('./routes/auth'));
 app.use('/api/dashboard',              require('./routes/dashboard'));
-app.use('/api/dispatch',               require('./routes/dispatch'));
+
 app.use('/api/dyeing',                 require('./routes/dyeing'));
 app.use('/api/fabric-purchase-inward', require('./routes/inward'));
 app.use('/api/inward-processed',       require('./routes/inwardProcessed'));

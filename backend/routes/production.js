@@ -143,6 +143,75 @@ async function getSupplierTable() {
   return _supplierResolved;
 }
 
+// ── NEW: Build a formatted "Delivery Address" text block from order_bookings ─
+// Delivery Address is sourced from the SAME order the user selects in
+// "Order No" — no separate customer lookup is used. This tries a wide range
+// of common column-name variants so it keeps working regardless of exactly
+// how your order_bookings table stores address data. Returns null if none of
+// the candidate columns exist / have data, so the UI can show a clean
+// "not available" state instead of an empty box.
+const DELIVERY_ADDRESS_CANDIDATES = {
+  company:  ['delivery_company_name', 'delivery_name', 'company_name', 'customer_company_name', 'customer_name'],
+  line1:    ['delivery_address_line1', 'delivery_address', 'delivery_addr', 'ship_address', 'address_line1', 'address'],
+  line2:    ['delivery_address_line2', 'address_line2', 'area', 'locality'],
+  city:     ['delivery_city', 'city'],
+  state:    ['delivery_state', 'state'],
+  country:  ['delivery_country', 'country'],
+  pincode:  ['delivery_pincode', 'delivery_pin', 'pincode', 'pin', 'zip', 'zipcode'],
+  gst:      ['delivery_gst', 'delivery_gstin', 'gstin', 'gst_no', 'gst'],
+};
+
+// Column already selected/aliased elsewhere in the /order/:orderNo query —
+// don't re-select it, just read it off the already-fetched row.
+const DELIVERY_ADDRESS_ALREADY_SELECTED = new Set(['customer_name']);
+
+function pickAddressCol(obCols, candidates) {
+  for (const c of candidates) if (obCols.has(c)) return c;
+  return null;
+}
+
+// Adds any not-yet-selected delivery-address candidate columns onto the
+// SELECT list for the /order/:orderNo query (raw column name = result key).
+function addDeliveryAddressSelectCols(selectCols, obCols) {
+  const allCandidates = Object.values(DELIVERY_ADDRESS_CANDIDATES).flat();
+  const seen = new Set();
+  for (const c of allCandidates) {
+    if (seen.has(c) || DELIVERY_ADDRESS_ALREADY_SELECTED.has(c)) continue;
+    seen.add(c);
+    if (obCols.has(c)) selectCols.push(`ob.\`${c}\``);
+  }
+}
+
+// Builds the multi-line formatted address block from the fetched row.
+function buildDeliveryAddressBlock(row, obCols) {
+  const pick = (candidates) => {
+    for (const c of candidates) {
+      if (row[c] != null && String(row[c]).trim() !== '') return String(row[c]).trim();
+    }
+    return '';
+  };
+
+  const company  = pick(DELIVERY_ADDRESS_CANDIDATES.company);
+  const line1    = pick(DELIVERY_ADDRESS_CANDIDATES.line1);
+  const line2    = pick(DELIVERY_ADDRESS_CANDIDATES.line2);
+  const city     = pick(DELIVERY_ADDRESS_CANDIDATES.city);
+  const state    = pick(DELIVERY_ADDRESS_CANDIDATES.state);
+  const country  = pick(DELIVERY_ADDRESS_CANDIDATES.country) || ((state || city) ? 'India' : '');
+  const pincode  = pick(DELIVERY_ADDRESS_CANDIDATES.pincode);
+  const gst      = pick(DELIVERY_ADDRESS_CANDIDATES.gst);
+
+  const lines = [];
+  if (company) lines.push(company);
+  if (line1)   lines.push(line1);
+  if (line2)   lines.push(line2);
+  if (city)    lines.push(city);
+  if (state || country) lines.push([state, country].filter(Boolean).join(', '));
+  if (pincode) lines.push(`PIN: ${pincode}`);
+  if (gst)     lines.push(`GST: ${gst}`);
+
+  return lines.length ? lines.join('\n') : null;
+}
+
 // ── DEBUG ROUTE: GET /api/production-plans/_debug/masters ────────────────────
 // Visit this in the browser (while logged in) or curl it to see exactly what
 // the backend auto-detected for vendor/supplier tables.
@@ -157,6 +226,13 @@ router.get('/_debug/masters', async (req, res) => {
     if (vendor.table)   { const [[c]] = await db.query(`SELECT COUNT(*) AS c FROM \`${vendor.table}\``);   vendorRowCount   = c.c; }
     if (supplier.table) { const [[c]] = await db.query(`SELECT COUNT(*) AS c FROM \`${supplier.table}\``); supplierRowCount = c.c; }
 
+    const obCols = await getObColumns();
+    const deliveryAddressColsFound = Object.entries(DELIVERY_ADDRESS_CANDIDATES)
+      .reduce((acc, [key, candidates]) => {
+        acc[key] = pickAddressCol(obCols, candidates);
+        return acc;
+      }, {});
+
     res.json({
       vendor: {
         resolved_table: vendor.table,
@@ -167,6 +243,9 @@ router.get('/_debug/masters', async (req, res) => {
         resolved_table: supplier.table,
         columns: [...supplier.cols],
         row_count: supplierRowCount,
+      },
+      delivery_address: {
+        order_bookings_columns_used: deliveryAddressColsFound,
       },
       all_tables_in_db: tableNames,
     });
@@ -361,6 +440,10 @@ router.get('/suppliers/search', async (req, res) => {
 // GET /api/production-plans/order/:orderNo
 // ── Fetches authoritative order data from order_bookings ─────────────────────
 // ── COLLATE fix prevents "Illegal mix of collations" 500 error ───────────────
+// ── NEW: also returns `delivery_address` — a formatted text block built from
+//    whatever address-related columns exist on order_bookings (see
+//    buildDeliveryAddressBlock above). Same auto-fill trigger as Order Date /
+//    Order Sort No / Confirmed By — i.e. whenever Order No is selected.
 router.get('/order/:orderNo', async (req, res) => {
   try {
     const obCols = await getObColumns();
@@ -404,6 +487,9 @@ router.get('/order/:orderNo', async (req, res) => {
     else
       selectCols.push('0 AS order_quantity');
 
+    // ── NEW: pull in any delivery-address-related raw columns that exist ──────
+    addDeliveryAddressSelectCols(selectCols, obCols);
+
     // Total already planned across all production_plans for this order
     selectCols.push(`COALESCE(
       (SELECT SUM(pp2.allocated_qty + pp2.production_qty + pp2.purchase_qty)
@@ -426,6 +512,9 @@ router.get('/order/:orderNo', async (req, res) => {
 
     if (ob.confirmed_by == null) ob.confirmed_by = null;
     if (ob.constn_as_po == null) ob.constn_as_po = null;
+
+    // ── NEW: build the formatted delivery address block ────────────────────
+    ob.delivery_address = buildDeliveryAddressBlock(ob, obCols);
 
     ob.balance_qty = Number(ob.order_quantity || 0) - Number(ob.total_planned_qty || 0);
 
@@ -503,6 +592,7 @@ router.post('/', async (req, res) => {
       order_type = '', order_no = '',
       order_date = null, order_sort_no = null,
       customer_name = '', confirmed_by = '',
+      delivery_address = '',                       // ← NEW
       constn_for_production = null, order_quantity = null,
       allocated_qty = 0, stock_special_instruction = null,
       production_qty = 0, inhouse_prod_qty = 0, vendor_prod_qty = 0,
@@ -514,19 +604,22 @@ router.post('/', async (req, res) => {
     } = req.body;
 
     const cols = await getColumns();
-    const hasCustomerName = cols.has('customer_name');
-    const hasConfirmedBy  = cols.has('confirmed_by');
-    const hasVendorCols   = cols.has('vendor_name');    // implies vendor_id too
-    const hasSupplierCols = cols.has('supplier_name');  // implies supplier_id too
+    const hasCustomerName    = cols.has('customer_name');
+    const hasConfirmedBy     = cols.has('confirmed_by');
+    const hasDeliveryAddress = cols.has('delivery_address');   // ← NEW
+    const hasVendorCols      = cols.has('vendor_name');    // implies vendor_id too
+    const hasSupplierCols    = cols.has('supplier_name');  // implies supplier_id too
 
     // Build column/value lists dynamically so this keeps working whether or
-    // not the migration adding vendor_id/vendor_name/supplier_id/supplier_name
-    // (and the older customer_name/confirmed_by) has been applied yet.
+    // not the migration adding vendor_id/vendor_name/supplier_id/supplier_name/
+    // delivery_address (and the older customer_name/confirmed_by) has been
+    // applied yet.
     const columns = ['rec_no', 'rec_date', 'order_type', 'order_no', 'order_date', 'order_sort_no'];
     const values  = [recNo, recDate, order_type, order_no, toDateOnly(order_date), order_sort_no || null];
 
-    if (hasCustomerName) { columns.push('customer_name'); values.push(customer_name || null); }
-    if (hasConfirmedBy)  { columns.push('confirmed_by');  values.push(confirmed_by  || null); }
+    if (hasCustomerName)    { columns.push('customer_name');    values.push(customer_name || null); }
+    if (hasConfirmedBy)     { columns.push('confirmed_by');     values.push(confirmed_by  || null); }
+    if (hasDeliveryAddress) { columns.push('delivery_address'); values.push(delivery_address || null); }  // ← NEW
 
     columns.push(
       'constn_for_production', 'order_quantity',
@@ -608,6 +701,7 @@ router.put('/:id', async (req, res) => {
       order_type = '', order_no = '',
       order_date = null, order_sort_no = null,
       customer_name = '', confirmed_by = '',
+      delivery_address = '',                       // ← NEW
       constn_for_production = null, order_quantity = null,
       allocated_qty = 0, stock_special_instruction = null,
       production_qty = 0, inhouse_prod_qty = 0, vendor_prod_qty = 0,
@@ -619,16 +713,18 @@ router.put('/:id', async (req, res) => {
     } = req.body;
 
     const cols = await getColumns();
-    const hasCustomerName = cols.has('customer_name');
-    const hasConfirmedBy  = cols.has('confirmed_by');
-    const hasVendorCols   = cols.has('vendor_name');
-    const hasSupplierCols = cols.has('supplier_name');
+    const hasCustomerName    = cols.has('customer_name');
+    const hasConfirmedBy     = cols.has('confirmed_by');
+    const hasDeliveryAddress = cols.has('delivery_address');   // ← NEW
+    const hasVendorCols      = cols.has('vendor_name');
+    const hasSupplierCols    = cols.has('supplier_name');
 
     const setParts = ['order_type=?', 'order_no=?', 'order_date=?', 'order_sort_no=?'];
     const values   = [order_type, order_no, toDateOnly(order_date), order_sort_no || null];
 
-    if (hasCustomerName) { setParts.push('customer_name=?'); values.push(customer_name || null); }
-    if (hasConfirmedBy)  { setParts.push('confirmed_by=?');  values.push(confirmed_by  || null); }
+    if (hasCustomerName)    { setParts.push('customer_name=?');    values.push(customer_name || null); }
+    if (hasConfirmedBy)     { setParts.push('confirmed_by=?');     values.push(confirmed_by  || null); }
+    if (hasDeliveryAddress) { setParts.push('delivery_address=?'); values.push(delivery_address || null); }  // ← NEW
 
     setParts.push(
       'constn_for_production=?', 'order_quantity=?',

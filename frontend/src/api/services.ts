@@ -77,26 +77,6 @@ export const deleteDyeing = (
   id: number
 ) => api.delete(`/dyeing/${id}`);
 
-/* =========================
-   DISPATCH
-========================= */
-
-export const getDispatch = () =>
-  api.get("/dispatch");
-
-export const createDispatch = (
-  data: object
-) => api.post("/dispatch", data);
-
-export const updateDispatch = (
-  id: number,
-  data: object
-) =>
-  api.put(`/dispatch/${id}`, data);
-
-export const deleteDispatch = (
-  id: number
-) => api.delete(`/dispatch/${id}`);
 
 /* =========================
    OUTWARD
@@ -668,10 +648,7 @@ export const updateFabricPurchaseOrder = (
 ) =>
   api.put(`/fabric-purchase-orders/${id}`, data);
 
-export const deleteFabricPurchaseOrder = (
-  id: number
-) =>
-  api.delete(`/fabric-purchase-orders/${id}`);
+
 
 /* =========================
    FABRIC PURCHASE INWARD
@@ -3144,6 +3121,7 @@ export interface ProductionPlan {
   order_sort_no?: string;       // autofill, editable
   customer_name?: string;
   confirmed_by?: string;
+  delivery_address?: string;    // ← NEW: autofilled from order_bookings on order select, read-only
   constn_for_production?: string;
   order_quantity?: number | string;   // autofill
  
@@ -3180,7 +3158,7 @@ export interface ProductionPlan {
   updated_at?: string;
 }
  
-
+ 
  
 export interface PlanListParams {
   search?: string;
@@ -3206,6 +3184,8 @@ export interface OrderOption {
  
 export interface OrderDetails extends OrderOption {
   constn_as_po?: string;
+  confirmed_by?: string;
+  delivery_address?: string;   // ← NEW: pre-formatted multi-line address block
   total_planned_qty: number;
   balance_qty: number;
 }
@@ -3240,6 +3220,7 @@ function buildPlanBody(
     order_sort_no:                data.order_sort_no ?? '',
     customer_name:                data.customer_name ?? '',
     confirmed_by:                 data.confirmed_by  ?? '',
+    delivery_address:             data.delivery_address ?? '',   // ← NEW
     constn_for_production:        data.constn_for_production ?? '',
     order_quantity:               data.order_quantity ?? '',
     allocated_qty:                data.allocated_qty ?? 0,
@@ -3288,7 +3269,12 @@ export const getProductionPlanById = async (
   return data;
 };
  
-/** Fetch customer/open order details for autofill */
+/**
+ * Fetch customer/open order details for autofill — includes order_date,
+ * order_sort_no, customer_name, confirmed_by, order_quantity, constn_as_po,
+ * AND (NEW) delivery_address — a ready-to-render multi-line text block built
+ * server-side from whatever address columns exist on order_bookings.
+ */
 export const getOrderDetails = async (
   orderNo: string,
 ): Promise<OrderDetails> => {
@@ -4775,10 +4761,24 @@ export const addManualFabricStock = async (payload: ManualFabricStockPayload) =>
   return res.data;
 };
 
-export const deleteManualFabricStock = async (id: number) => {
-  const res = await api.delete(`/fabric-stock/manual/${id}`);
-  return res.data;
-};
+// export const deleteManualFabricStock = async (id: number): Promise<{ message: string; alreadyDeleted?: boolean }> => {
+//   try {
+//     const res = await api.delete(`/fabric-stock/manual/${id}`);
+//     return res.data;
+//   } catch (err: any) {
+//     const status    = err?.response?.status;
+//     const serverMsg = err?.response?.data?.message;
+
+//     if (status === 404) {
+//       const e: any = new Error(serverMsg || 'This entry was already deleted.');
+//       e.alreadyDeleted = true;
+//       e.status = 404;
+//       throw e;
+//     }
+
+//     throw new Error(serverMsg || err.message || 'Failed to delete stock entry.');
+//   }
+// };
 
 export const getFabricStockFilters = async () => {
   const res = await api.get("/fabric-stock/filters");
@@ -5742,4 +5742,520 @@ export const deletePaymentInEntry = async (id: number): Promise<void> => {
  
 export const deletePaymentOutEntry = async (id: number): Promise<void> => {
   await api.delete(`${INVOICE_BASE}/payments-out/${id}`);
+};
+
+export type YarnGstType = "CGST_SGST" | "IGST" | "NONE";
+ 
+export interface YarnPurchaseInvoiceItem {
+  id?: number;
+  delivered_qty: number;   // kg
+  no_of_bags?: number | null;
+  bag_no?: string;
+  lot_no?: string;
+  rate?: number;
+  amount?: number;
+  remarks?: string;
+}
+ 
+export interface YarnPurchaseInvoicePayload {
+  id?: number;
+  invoice_no: string;
+  invoice_date: string;
+  due_date?: string | null;
+ 
+  ypo_id: number | null;
+  ypo_item_id: number | null;
+  po_no: string;
+  po_date?: string | null;
+ 
+  supplier: string;
+  supplier_address: string;
+  supplier_gstin: string;
+ 
+  quality: string;        // count / lot description
+  hsn_code: string;
+  unit: string;            // always "KG"
+  rate: number;
+ 
+  total_order_qty: number;
+  already_invoiced_qty?: number;
+  delivered_qty: number;
+  balance_qty: number;
+ 
+  gst_type: YarnGstType;
+  cgst_pct: number;
+  sgst_pct: number;
+  igst_pct: number;
+ 
+  advance: number;
+  sub_total: number;
+  gst_amount: number;
+  net_value: number;
+  balance_due: number;
+ 
+  remarks: string;
+  status: "Draft" | "Pending" | "Paid" | "Cancelled";
+ 
+  items: YarnPurchaseInvoiceItem[];
+}
+ 
+export interface YarnPoLineOption {
+  key: string;
+  po_type: "yarn";
+  po_id: number;
+  item_id: number;
+  po_no: string;
+  po_date: string;
+  due_date?: string | null;
+  supplier: string;
+  supplier_address: string;
+  supplier_gstin: string;
+  quality: string;
+  hsn_code: string;
+  unit: string;
+  rate: number;
+  total_qty: number;
+  already_invoiced_qty: number;
+  balance_qty: number;
+  gst_type: YarnGstType;
+  cgst_pct: number;
+  sgst_pct: number;
+  igst_pct: number;
+  advance: number;
+}
+ 
+const YINV_BASE = "/api/yarn-purchase-invoices";
+ 
+async function handleJson(res: Response) {
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try { const body = await res.json(); msg = body.message || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+ 
+export async function getYarnPurchaseInvoices(params: { search?: string; page?: number; limit?: number; status?: string }) {
+  const qs = new URLSearchParams();
+  if (params.search) qs.set("search", params.search);
+  if (params.page) qs.set("page", String(params.page));
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.status) qs.set("status", params.status);
+  const res = await fetch(`${YINV_BASE}?${qs.toString()}`);
+  return handleJson(res) as Promise<{ data: YarnPurchaseInvoicePayload[]; total: number }>;
+}
+ 
+export async function getYarnPurchaseInvoiceById(id: number) {
+  const res = await fetch(`${YINV_BASE}/${id}`);
+  return handleJson(res) as Promise<YarnPurchaseInvoicePayload>;
+}
+ 
+export async function createYarnPurchaseInvoice(payload: YarnPurchaseInvoicePayload) {
+  const res = await fetch(YINV_BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJson(res) as Promise<YarnPurchaseInvoicePayload>;
+}
+ 
+export async function updateYarnPurchaseInvoice(id: number, payload: YarnPurchaseInvoicePayload) {
+  const res = await fetch(`${YINV_BASE}/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJson(res) as Promise<YarnPurchaseInvoicePayload>;
+}
+ 
+export async function deleteYarnPurchaseInvoice(id: number) {
+  const res = await fetch(`${YINV_BASE}/${id}`, { method: "DELETE" });
+  return handleJson(res);
+}
+ 
+export async function getNextYarnInvoiceNo() {
+  const res = await fetch(`${YINV_BASE}/next-invoice-no`);
+  return handleJson(res) as Promise<{ invoice_no: string }>;
+}
+ 
+export async function searchYarnPoLines(query: string) {
+  const qs = new URLSearchParams({ search: query });
+  const res = await fetch(`${YINV_BASE}/po-lines?${qs.toString()}`);
+  return handleJson(res) as Promise<YarnPoLineOption[]>;
+}
+
+export interface SalesLedgerRow {
+  row_no: number;
+  sales_date: string;
+  invoice_no: string;
+  customer_name: string;
+  bill_to: string;
+  credit: number;
+  debit: number;
+  balance: number;
+}
+ 
+export interface SalesLedgerListResponse {
+  data: SalesLedgerRow[];
+  total: number;
+  page: number;
+  limit: number;
+}
+ 
+export interface SalesReportSummary {
+  total_debit: number;
+  total_credit: number;
+  net_balance: number;
+  invoice_count: number;
+  customer_count: number;
+  scoped_customer: string | null;
+  from: string | null;
+  to: string | null;
+}
+ 
+export interface SalesTrendPoint {
+  month: string;    // 'YYYY-MM'
+  debit: number;
+  credit: number;
+  balance: number;
+}
+ 
+export interface SalesLedgerFilters {
+  search?: string;
+  customer?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+ 
+async function apiGet<T>(path: string, qs: Record<string, string | number | undefined>): Promise<T> {
+  const params = new URLSearchParams();
+  Object.entries(qs).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+  });
+  const res = await fetch(`${path}?${params.toString()}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as any));
+    throw new Error(body.message || `Request to ${path} failed.`);
+  }
+  return res.json();
+}
+ 
+export async function fetchSalesLedger(filters: SalesLedgerFilters): Promise<SalesLedgerListResponse> {
+  return apiGet('/api/sales-report/ledger', {
+    search: filters.search, customer: filters.customer, from: filters.from, to: filters.to,
+    page: filters.page ?? 1, limit: filters.limit ?? 25,
+  });
+}
+ 
+// Full (unpaginated) statement — used by CSV/Excel/PDF export so the file
+// always contains every matching row, not just the current page.
+export async function fetchSalesLedgerAll(filters: Omit<SalesLedgerFilters, 'page' | 'limit'>): Promise<{ data: SalesLedgerRow[]; total: number }> {
+  return apiGet('/api/sales-report/ledger/all', {
+    search: filters.search, customer: filters.customer, from: filters.from, to: filters.to,
+  });
+}
+ 
+export async function fetchSalesReportSummary(filters: Omit<SalesLedgerFilters, 'page' | 'limit'>): Promise<SalesReportSummary> {
+  return apiGet('/api/sales-report/summary', {
+    search: filters.search, customer: filters.customer, from: filters.from, to: filters.to,
+  });
+}
+ 
+export async function fetchSalesReportTrend(filters: { customer?: string; from?: string; to?: string }): Promise<SalesTrendPoint[]> {
+  return apiGet('/api/sales-report/trend', { customer: filters.customer, from: filters.from, to: filters.to });
+}
+ 
+export async function fetchSalesReportCustomers(search: string = ''): Promise<string[]> {
+  return apiGet('/api/sales-report/customers', { search });
+}
+
+
+// ── Purchase Report ─────────────────────────────────────────────────────
+export interface PurchaseLedgerRow {
+  row_no: number;
+  purchase_date: string | null;
+  invoice_no: string;
+  supplier_name: string;
+  bill_to: string;
+  credit: number;
+  debit: number;
+  balance: number;
+}
+
+export interface PurchaseReportSummary {
+  total_debit: number;
+  total_credit: number;
+  net_balance: number;
+  invoice_count: number;
+  supplier_count: number;
+}
+
+export interface PurchaseTrendPoint {
+  month: string; // 'YYYY-MM'
+  debit: number;
+  credit: number;
+  balance: number;
+}
+
+interface PurchaseLedgerFilters {
+  search?: string;
+  supplier?: string;
+  from?: string;
+  to?: string;
+}
+
+const PURCHASE_REPORT_BASE = '/api/purchase-report';
+
+async function purchaseReportApiGet<T>(
+  path: string,
+  qs: Record<string, string | number | undefined> = {},
+): Promise<T> {
+  const params = new URLSearchParams();
+  Object.entries(qs).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+  });
+  const query = params.toString();
+  const res = await fetch(`${PURCHASE_REPORT_BASE}${path}${query ? `?${query}` : ''}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as any));
+    throw new Error(body.message || `Request to ${PURCHASE_REPORT_BASE}${path} failed.`);
+  }
+  return res.json();
+}
+
+export async function fetchPurchaseLedger(
+  params: PurchaseLedgerFilters & { page: number; limit: number },
+): Promise<{ data: PurchaseLedgerRow[]; total: number; page: number; limit: number }> {
+  return purchaseReportApiGet('/ledger', { ...params });
+}
+
+export async function fetchPurchaseLedgerAll(
+  filters: PurchaseLedgerFilters,
+): Promise<{ data: PurchaseLedgerRow[]; total: number }> {
+  return purchaseReportApiGet('/ledger/all', { ...filters });
+}
+
+export async function fetchPurchaseReportSummary(filters: PurchaseLedgerFilters): Promise<PurchaseReportSummary> {
+  return purchaseReportApiGet('/summary', { ...filters });
+}
+
+export async function fetchPurchaseReportTrend(
+  filters: { supplier?: string; from?: string; to?: string },
+): Promise<PurchaseTrendPoint[]> {
+  return purchaseReportApiGet('/trend', { ...filters });
+}
+
+export async function fetchPurchaseReportSuppliers(): Promise<string[]> {
+  return purchaseReportApiGet('/suppliers');
+}
+
+export type DispatchStatus = 'Pending' | 'Dispatched' | 'In Transit' | 'Delivered' | 'Returned';
+export type FreightPaidBy = 'Consignor' | 'Consignee' | 'To Pay';
+export type ProductType = 'Fabric' | 'Yarn';
+ 
+export interface DispatchDelay {
+  label: string;
+  tone: 'early' | 'ontime' | 'late' | 'ontrack' | 'overdue' | 'returned';
+}
+ 
+export interface DispatchRow {
+  id: number;
+  dispatch_no: string;
+  dispatch_date: string | null;
+  invoice_no: string | null;
+  invoice_value: number | null;
+  customer_name: string;
+  ship_to: string;
+  product_type: ProductType;
+  qty_dispatched: number;
+  qty_unit: string;
+  no_of_packages: number | null;
+  transporter_name: string | null;
+  vehicle_no: string | null;
+  lr_no: string | null;
+  driver_name: string | null;
+  driver_phone: string | null;
+  freight_charges: number;
+  freight_paid_by: FreightPaidBy;
+  status: DispatchStatus;
+  expected_delivery_date: string | null;
+  actual_delivery_date: string | null;
+  delay: DispatchDelay | null;
+  remarks: string | null;
+  dispatched_by: string | null;
+}
+ 
+export interface DispatchSummary {
+  total_dispatches: number;
+  in_transit_count: number;
+  pending_count: number;
+  delayed_count: number;
+  delivered_this_month: number;
+}
+ 
+export interface DispatchStatusBreakdown {
+  status: DispatchStatus;
+  count: number;
+}
+ 
+export interface DispatchTrendPoint {
+  month: string; // 'YYYY-MM'
+  dispatch_count: number;
+  total_qty: number;
+  delivered_count: number;
+}
+ 
+export interface InvoiceOption {
+  id: number;
+  invoice_no: string;
+  customer_name: string;
+  bill_to: string | null;
+  invoice_amount: number | null;
+}
+ 
+export interface DispatchFormFields {
+  dispatch_no?: string;
+  dispatch_date: string;
+  sales_invoice_id?: number | null;
+  invoice_no_snapshot?: string;
+  customer_name: string;
+  ship_to?: string;
+  product_type: ProductType;
+  qty_dispatched: number;
+  qty_unit: string;
+  no_of_packages?: number | null;
+  transporter_name?: string;
+  vehicle_no?: string;
+  lr_no?: string;
+  driver_name?: string;
+  driver_phone?: string;
+  freight_charges?: number;
+  freight_paid_by?: FreightPaidBy;
+  status: DispatchStatus;
+  expected_delivery_date?: string | null;
+  actual_delivery_date?: string | null;
+  remarks?: string;
+  dispatched_by?: string;
+}
+ 
+interface DispatchFilters {
+  search?: string;
+  customer?: string;
+  status?: string;
+  transporter?: string;
+  from?: string;
+  to?: string;
+}
+ 
+const DISPATCH_BASE = '/api/dispatches';
+ 
+async function dispatchApiGet<T>(path: string, qs: Record<string, any> = {}): Promise<T> {
+  const params = new URLSearchParams();
+  Object.entries(qs).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+  });
+  const query = params.toString();
+  const res = await fetch(`${DISPATCH_BASE}${path}${query ? `?${query}` : ''}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as any));
+    throw new Error(body.message || `Request to ${DISPATCH_BASE}${path} failed.`);
+  }
+  return res.json();
+}
+ 
+async function dispatchApiSend<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: any): Promise<T> {
+  const res = await fetch(`${DISPATCH_BASE}${path}`, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({} as any));
+    throw new Error(errBody.message || `Request to ${DISPATCH_BASE}${path} failed.`);
+  }
+  return res.json();
+}
+ 
+export async function fetchDispatches(
+  params: DispatchFilters & { page: number; limit: number },
+): Promise<{ data: DispatchRow[]; total: number; page: number; limit: number }> {
+  return dispatchApiGet('/', params);
+}
+ 
+export async function fetchDispatchesAll(filters: DispatchFilters): Promise<{ data: DispatchRow[]; total: number }> {
+  return dispatchApiGet('/all', filters);
+}
+ 
+export async function fetchDispatchSummary(filters: { customer?: string; from?: string; to?: string }): Promise<DispatchSummary> {
+  return dispatchApiGet('/summary', filters);
+}
+ 
+export async function fetchDispatchStatusBreakdown(
+  filters: { customer?: string; from?: string; to?: string },
+): Promise<DispatchStatusBreakdown[]> {
+  return dispatchApiGet('/status-breakdown', filters);
+}
+ 
+export async function fetchDispatchTrend(
+  filters: { customer?: string; from?: string; to?: string },
+): Promise<DispatchTrendPoint[]> {
+  return dispatchApiGet('/trend', filters);
+}
+ 
+export async function fetchDispatchCustomers(): Promise<string[]> {
+  return dispatchApiGet('/customers');
+}
+ 
+export async function fetchDispatchTransporters(): Promise<string[]> {
+  return dispatchApiGet('/transporters');
+}
+ 
+export async function fetchDispatchInvoiceOptions(search = ''): Promise<InvoiceOption[]> {
+  return dispatchApiGet('/invoices', { search });
+}
+ 
+export async function createDispatch(fields: DispatchFormFields): Promise<{ id: number; dispatch_no: string }> {
+  return dispatchApiSend('POST', '/', fields);
+}
+ 
+export async function updateDispatch(id: number, fields: DispatchFormFields): Promise<void> {
+  return dispatchApiSend('PUT', `/${id}`, fields);
+}
+ 
+export async function deleteDispatch(id: number): Promise<void> {
+  return dispatchApiSend('DELETE', `/${id}`);
+}
+
+export const deleteFabricPurchaseOrder = async (id: number): Promise<{ message: string }> => {
+  try {
+    const res = await api.delete(`/fabric-purchase-orders/${id}`);
+    return res.data;
+  } catch (err: any) {
+    const status     = err?.response?.status;
+    const serverMsg  = err?.response?.data?.message;
+    const sqlMessage = err?.response?.data?.sqlMessage;
+
+    // Prefer the backend's explicit message. Fall back to sqlMessage,
+    // then to axios's generic message, then a hard default — so the
+    // user never sees a bare "Request failed with status code 409".
+    const finalMsg =
+      serverMsg ||
+      sqlMessage ||
+      (status === 409
+        ? "This FPO can't be deleted right now — it's still linked to another record (e.g. a Purchase Invoice)."
+        : err.message) ||
+      "Failed to delete FPO.";
+
+    const wrapped = new Error(finalMsg);
+    (wrapped as any).status = status;
+    (wrapped as any).code   = err?.response?.data?.code;
+    throw wrapped;
+  }
+};
+
+export const deleteManualFabricStock = async (id: number) => {
+  const response = await api.delete(`/fabric-stock/manual/${id}`);
+  return response.data;
 };

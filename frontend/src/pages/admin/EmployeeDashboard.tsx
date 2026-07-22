@@ -78,7 +78,6 @@ const MODULES: ModuleMeta[] = [
   { id: 'production_ops',      label: 'Production Operations',  color: '#d14634', accentColor: 'rgba(245,158,11,0.12)', headerIcon: <CgProductHunt size={16} /> },
   { id: 'purchase_ops',        label: 'Purchase Operations',    color: '#f59e0b', accentColor: 'rgba(59,130,246,0.12)', headerIcon: <Package size={16} /> },
   { id: 'sales_ops',           label: 'Sales Operations',       color: '#ec4899', accentColor: 'rgba(236,72,153,0.12)', headerIcon: <Droplets size={16} /> },
-  { id: 'dispatch_logistics',  label: 'Dispatch & Logistics',   color: '#22c55e', accentColor: 'rgba(34,197,94,0.12)',  headerIcon: <Truck size={16} /> },
   { id: 'reports_analytics',   label: 'Reports & Analytics',    color: '#a855f7', accentColor: 'rgba(168,85,247,0.12)', headerIcon: <BarChart2 size={16} /> },
   { id: 'finance_billing',     label: 'Finance & Billing',      color: '#f97316', accentColor: 'rgba(249,115,22,0.12)', headerIcon: <Banknote size={16} /> },
   { id: 'sample_dev',          label: 'Sample & Development',   color: '#06b6d4', accentColor: 'rgba(6,182,212,0.12)',  headerIcon: <Beaker size={16} /> },
@@ -158,13 +157,7 @@ const STAGES: Record<string, StageNode[]> = {
     { id: 'credit_note', label: 'Credit Note', icon: <CreditCard size={14} /> },
   ],
 
-  /* ─── Dispatch & Logistics ─────────────────────────────────────── */
-  dispatch_logistics: [
-    { id: 'dispatch_order',   label: 'Dispatch Order',   icon: <Truck size={14} />,    component: 'Dispatch' },
-    { id: 'outward',          label: 'Outward',          icon: <Send size={14} />,     component: 'Outward' },
-    { id: 'delivery_challan', label: 'Delivery Challan', icon: <FileText size={14} /> },
-    { id: 'tracking',         label: 'Tracking',         icon: <Navigation size={14} /> },
-  ],
+
 
   /* ─── Reports & Analytics ──────────────────────────────────────── */
   reports_analytics: [
@@ -229,7 +222,6 @@ const EXPLICIT_LOADERS: Record<string, () => Promise<{ default: React.ComponentT
   OrderStatusMaster: () => import('./OrderStatusMaster'),
   DevelopmentProcess:       () => import('./DevelopmentProcess'),
   EditDevelopmentProcess:   () => import('./EditDevelopmentProcess'),
-  Dispatch:                 () => import('./Dispatch'),
   FabricPurchaseInward:     () => import('./FabricPurchaseInward'),
   FabricPurchaseOrders:     () => import('./FabricPurchaseOrders'),
   InwardProcessed:          () => import('./InwardProcessed'),

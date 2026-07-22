@@ -37,7 +37,7 @@ import JobWork                from './pages/admin/FabricPurchaseOrders';
 import Outward                from './pages/admin/Outward';
 import Dyeing                 from './pages/admin/Dyeing';
 import InwardProcessed        from './pages/admin/InwardProcessed';
-import Dispatch               from './pages/admin/Dispatch';
+import DispatchSummaryMaster  from './pages/admin/Dispatchsummarymaster '; // ← NEW — replaces the old, missing "./pages/admin/Dispatch"
 import ProductionMaster       from './pages/admin/ProductionMaster';
 import WorkordernMaster       from './pages/admin/WorkOrderMaster';
 
@@ -81,10 +81,14 @@ import OrderStatusMaster from './pages/admin/OrderStatusMaster';
 import FabricPackingList from "./pages/admin/FabricPackingList";
 import FabricInvoice     from "./pages/admin/Invoice";       // ← Sales Invoice
 import FabricPurchaseInvoice from "./pages/admin/PurchaseInvoice"; // ← NEW — Purchase Invoice
+import YarnPurchaseInvoice   from "./pages/admin/YarnPurchaseInvoice"; // ← NEW — Yarn Purchase Invoice
 
 import YarnStock from './pages/admin/YarnStock';
 import YarnPackingList from './pages/admin/YarnPackingList';
 import EmployeeTracker from './pages/admin/master/EmployeeTracker';   // ← NEW — Employee Expense Tracker
+
+import SalesReportMaster from './pages/admin/SalesReportMaster';
+import PurchaseReportMaster from './pages/admin/PurchaseReportMaster';
 
 
 import { ReactNode } from 'react';
@@ -141,6 +145,22 @@ function FabricPackingListPage() {
 // Reads ?invoice=... from the URL (set by the wrapper above) and passes it to
 // FabricInvoice as initialFilter so the page opens pre-filtered to that
 // invoice. Works equally well when navigated to directly with no query param.
+//
+// NOTE: if TS reports `Property 'initialFilter' does not exist on type
+// 'IntrinsicAttributes'` here, it means pages/admin/Invoice.tsx's component
+// isn't typed to accept any props yet (likely declared as
+// `export default function FabricInvoice() {...}` with no props parameter,
+// or `React.FC` with no generic). Fix it at the source, in Invoice.tsx:
+//
+//   interface FabricInvoiceProps {
+//     initialFilter?: string;
+//   }
+//   export default function FabricInvoice({ initialFilter }: FabricInvoiceProps) {
+//     // use initialFilter to pre-filter/search on mount
+//   }
+//
+// This file (App.tsx) doesn't need to change for that fix — it's already
+// calling <FabricInvoice initialFilter={invoiceFilter} /> correctly.
 function FabricInvoicePage() {
   const [searchParams] = useSearchParams();
   const invoiceFilter = searchParams.get('invoice') || undefined;
@@ -158,6 +178,18 @@ function FabricPurchaseInvoicePage() {
   const [searchParams] = useSearchParams();
   const invoiceFilter = searchParams.get('invoice') || undefined;
   return <FabricPurchaseInvoice initialFilter={invoiceFilter} />;
+}
+
+// ─── YarnPurchaseInvoice wrapper (Purchase) ── NEW ─────────────────────────────
+// Same ?invoice=... pre-filter pattern as FabricPurchaseInvoicePage above,
+// for the yarn side. Set this when navigating here right after converting a
+// YPO (see the "Create Purchase Invoice" button in YarnPurchaseOrderMaster,
+// if/when that gets added) so the page opens pre-filtered to the invoice
+// that was just created. Works fine with no query param too.
+function YarnPurchaseInvoicePage() {
+  const [searchParams] = useSearchParams();
+  const invoiceFilter = searchParams.get('invoice') || undefined;
+  return <YarnPurchaseInvoice initialFilter={invoiceFilter} />;
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -229,6 +261,10 @@ function AppRoutes() {
           <Route path="packing-list" element={<FabricPackingListPage />} />
           <Route path="sales-invoice" element={<FabricInvoicePage />} />
           <Route path="purchase-invoice" element={<FabricPurchaseInvoicePage />} />   {/* ← NEW */}
+          <Route path="yarn-purchase-invoice" element={<YarnPurchaseInvoicePage />} />   {/* ← NEW */}
+
+           <Route path="sales-report" element={<SalesReportMaster />} />
+           <Route path="purchase-report" element={<PurchaseReportMaster />} />
 
         {/* Production */}
         <Route path="production" element={<ProductionMaster />} />
@@ -257,8 +293,10 @@ function AppRoutes() {
         <Route path="dyeing"           element={<Dyeing />} />
         <Route path="inward-processed" element={<InwardProcessed />} />
 
-        {/* Stage 5 */}
-        <Route path="dispatch" element={<Dispatch />} />
+        {/* Stage 5 — Dispatch Summary (logistics: transporter, vehicle,
+            LR no., delivery status). Was importing from the missing
+            "./pages/admin/Dispatch" — now points at DispatchSummaryMaster. */}
+        <Route path="dispatch" element={<DispatchSummaryMaster />} />
       </Route>
 
       {/* ═══════════════════════════════════════════════════════════════════
